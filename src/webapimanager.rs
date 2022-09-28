@@ -15,10 +15,6 @@ use axum::extract::Path;
 
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::websocketmessage::{
-    AsyncWebSocketDomoMessage, SyncWebSocketDomoMessage, SyncWebSocketDomoRequest,
-};
-
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::restmessage;
@@ -29,6 +25,8 @@ use serde_json::json;
 
 use nix::sys::socket::{self, sockopt::ReuseAddr, sockopt::ReusePort};
 use std::{net::TcpListener, os::unix::io::AsRawFd};
+
+use crate::websocketmessage::{AsyncWebSocketDomoMessage, SyncWebSocketDomoMessage, SyncWebSocketDomoRequest};
 
 pub struct WebApiManager {
     // rest api listening port
