@@ -26,7 +26,9 @@ use serde_json::json;
 use nix::sys::socket::{self, sockopt::ReuseAddr, sockopt::ReusePort};
 use std::{net::TcpListener, os::unix::io::AsRawFd};
 
-use crate::websocketmessage::{AsyncWebSocketDomoMessage, SyncWebSocketDomoMessage, SyncWebSocketDomoRequest};
+use crate::websocketmessage::{
+    AsyncWebSocketDomoMessage, SyncWebSocketDomoMessage, SyncWebSocketDomoRequest,
+};
 
 pub struct WebApiManager {
     // rest api listening port
