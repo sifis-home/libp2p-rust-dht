@@ -1,3 +1,4 @@
+use crate::domopersistentstorage::DomoPersistentStorage;
 use crate::utils;
 use chrono::prelude::*;
 use futures::prelude::*;
@@ -13,7 +14,6 @@ use std::hash::{Hash, Hasher};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
-use crate::domopersistentstorage::DomoPersistentStorage;
 
 // possible events returned by cache_loop_event()
 #[derive(Debug)]
