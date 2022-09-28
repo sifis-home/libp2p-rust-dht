@@ -72,6 +72,7 @@ pub struct DomoCache<T: DomoPersistentStorage> {
     pub local_peer_id: String,
     client_tx_channel: Sender<DomoEvent>,
     client_rx_channel: Receiver<DomoEvent>,
+    send_cache_state_timer: tokio::time::Instant,
 }
 
 impl<T: DomoPersistentStorage> Hash for DomoCache<T> {
@@ -350,9 +351,11 @@ impl<T: DomoPersistentStorage> DomoCache<T> {
                     return Ok(dm);
                 }
                 // sending cache state periodically
-                _ = tokio::time::sleep(Duration::from_secs(u64::from(SEND_CACHE_HASH_PERIOD))) => {
-                            self.send_cache_state().await;
-                },
+
+                _ = tokio::time::sleep_until(self.send_cache_state_timer) => {
+                    self.send_cache_state_timer = tokio::time::Instant::now() + Duration::from_secs(u64::from(SEND_CACHE_HASH_PERIOD));
+                    self.send_cache_state().await;
+                }
 
                 event = self.swarm.select_next_some() => {
                 match event {
@@ -441,6 +444,9 @@ impl<T: DomoPersistentStorage> DomoCache<T> {
 
         let (client_tx_channel, client_rx_channel) = mpsc::channel::<DomoEvent>(32);
 
+        let send_cache_state_timer: tokio::time::Instant =
+            tokio::time::Instant::now() + Duration::from_secs(u64::from(SEND_CACHE_HASH_PERIOD));
+
         let mut c = DomoCache {
             is_persistent_cache,
             swarm,
@@ -452,6 +458,7 @@ impl<T: DomoPersistentStorage> DomoCache<T> {
             peers_caches_state: BTreeMap::new(),
             client_tx_channel,
             client_rx_channel,
+            send_cache_state_timer,
         };
 
         // Populate the cache with the sqlite contents
