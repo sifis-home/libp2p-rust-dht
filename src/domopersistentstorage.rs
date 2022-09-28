@@ -1,8 +1,7 @@
 use rusqlite::{params, Connection, OpenFlags};
 
-use crate::domocache::DomoCacheElement;
-
 use std::path::{Path, PathBuf};
+use crate::domocache::DomoCacheElement;
 
 pub trait DomoPersistentStorage {
     fn store(&mut self, element: &DomoCacheElement);
