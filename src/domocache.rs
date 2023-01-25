@@ -1,6 +1,5 @@
 use crate::domopersistentstorage::DomoPersistentStorage;
 use crate::utils;
-use chrono::prelude::*;
 use futures::prelude::*;
 use libp2p::gossipsub::IdentTopic as Topic;
 use libp2p::identity::Keypair;
@@ -13,6 +12,7 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
+use time::OffsetDateTime;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 
@@ -404,7 +404,7 @@ impl<T: DomoPersistentStorage> DomoCache<T> {
                     SwarmEvent::Behaviour(crate::domolibp2p::OutEvent::Mdns(
                         libp2p::mdns::MdnsEvent::Expired(list),
                     )) => {
-                        let local = Utc::now();
+                        let local = OffsetDateTime::now_utc();
 
                         for (peer, _) in list {
                             log::info!("MDNS for peer {peer} expired {local:?}");
@@ -413,7 +413,7 @@ impl<T: DomoPersistentStorage> DomoCache<T> {
                     SwarmEvent::Behaviour(crate::domolibp2p::OutEvent::Mdns(
                         libp2p::mdns::MdnsEvent::Discovered(list),
                     )) => {
-                        let local = Utc::now();
+                        let local = OffsetDateTime::now_utc();
                         for (peer, _) in list {
                             self.swarm
                                 .behaviour_mut()
