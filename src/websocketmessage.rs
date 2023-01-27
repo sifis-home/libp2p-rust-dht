@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AsyncWebSocketDomoMessage {
     Volatile {
         value: serde_json::Value,
@@ -35,14 +35,18 @@ pub enum SyncWebSocketDomoRequest {
         topic_uuid: String,
         value: serde_json::Value,
     },
-    Response {
-        value: serde_json::Value,
-    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncWebSocketDomoMessage {
+pub struct SyncWebSocketDomoRequestMessage {
     pub ws_client_id: String,
     pub req_id: String,
     pub request: SyncWebSocketDomoRequest,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncWebSocketDomoResponseMessage {
+    pub ws_client_id: String,
+    pub req_id: String,
+    pub response: String,
 }

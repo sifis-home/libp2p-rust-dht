@@ -1,6 +1,6 @@
 use tokio::sync::oneshot;
 
-type RestResponder = oneshot::Sender<Result<serde_json::Value, String>>;
+pub(crate) type RestResponder = oneshot::Sender<Result<serde_json::Value, String>>;
 
 #[derive(Debug)]
 pub enum RestMessage {

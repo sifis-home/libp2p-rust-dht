@@ -4,10 +4,12 @@ use libp2p::gossipsub::{
     Gossipsub, GossipsubEvent, GossipsubMessage, IdentTopic as Topic, MessageAuthenticity,
     ValidationMode,
 };
+use libp2p::swarm::SwarmBuilder;
 use libp2p::{gossipsub, tcp};
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 //
 
 use libp2p::core::{
@@ -22,7 +24,6 @@ use libp2p::Transport;
 
 use libp2p::{identity, mdns, swarm::NetworkBehaviour, PeerId, Swarm};
 
-use libp2p::swarm::SwarmBuilder;
 use std::error::Error;
 use std::time::Duration;
 
@@ -134,6 +135,7 @@ pub async fn start(
         // subscribes to config topic
         gossipsub.subscribe(&topic_config).unwrap();
 
+        let gossipsub = SharedGossipsub(Arc::new(std::sync::Mutex::new(gossipsub)));
         let behaviour = DomoBehaviour { mdns, gossipsub };
         //Swarm::new(transport, behaviour, local_peer_id)
 
@@ -156,7 +158,63 @@ pub async fn start(
 #[behaviour(out_event = "OutEvent")]
 pub struct DomoBehaviour {
     pub mdns: libp2p::mdns::tokio::Behaviour,
-    pub gossipsub: Gossipsub,
+    pub(crate) gossipsub: SharedGossipsub,
+}
+
+// See inner doc, this MUST be pub because of `NetworkBehavior` proc-macro. At least we don't
+// expose the private doc...
+#[derive(Clone)]
+pub struct SharedGossipsub(
+    /// A workaround for the _opinionated_ libp2p architecture.
+    ///
+    /// libp2p like to use single abstractions for different purposes, especially in relationship
+    /// to [`Swarm`] and [`NetworkBehaviour`]. This approach does not work _at all_ when you try to
+    /// correctly handle streams: polling requires a mutable reference to the object, and if you
+    /// performs this operation concurrently (and you probably should) then you totally lost the
+    /// possibility of accessing the object in other ways. This concept is the reason we have
+    /// senders and receivers when using channels.
+    ///
+    /// Nevertheless, we have been able to build a channel-like interface over
+    /// [`Swarm<DomoBehaviour>`], which however uses a _sync_ `Mutex` wrapped inside an `Arc` in
+    /// order to access the `gossipsub` member of `DomoBehaviour` after a message has been polled
+    /// from the _swarm_ stream. See `domocache::swarm::SwarmReceiver::into_stream` for more
+    /// information.
+    pub(crate) Arc<std::sync::Mutex<Gossipsub>>,
+);
+
+impl NetworkBehaviour for SharedGossipsub {
+    type ConnectionHandler = <Gossipsub as NetworkBehaviour>::ConnectionHandler;
+    type OutEvent = <Gossipsub as NetworkBehaviour>::OutEvent;
+
+    #[inline]
+    fn new_handler(&mut self) -> Self::ConnectionHandler {
+        self.0.try_lock().unwrap().new_handler()
+    }
+
+    #[inline]
+    fn on_connection_handler_event(
+        &mut self,
+        peer_id: PeerId,
+        connection_id: libp2p::swarm::derive_prelude::ConnectionId,
+        event: <<Self::ConnectionHandler as libp2p::swarm::IntoConnectionHandler>::Handler as
+            libp2p::swarm::ConnectionHandler>::OutEvent,
+    ) {
+        self.0
+            .try_lock()
+            .unwrap()
+            .on_connection_handler_event(peer_id, connection_id, event)
+    }
+
+    #[inline]
+    fn poll(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+        params: &mut impl libp2p::swarm::PollParameters,
+    ) -> std::task::Poll<
+        libp2p::swarm::NetworkBehaviourAction<Self::OutEvent, Self::ConnectionHandler>,
+    > {
+        self.0.try_lock().unwrap().poll(cx, params)
+    }
 }
 
 #[derive(Debug)]

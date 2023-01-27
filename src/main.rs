@@ -1,12 +1,16 @@
+use futures::StreamExt;
+use futures_concurrency::future::Join;
 use serde_json::json;
 use time::OffsetDateTime;
+use tokio_stream::wrappers::LinesStream;
 
 use std::error::Error;
+use std::future::ready;
 
 use tokio::io::{self, AsyncBufReadExt};
 
 use clap::Parser;
-use sifis_dht::domobroker::{DomoBroker, DomoBrokerConf};
+use sifis_dht::domobroker::{create_domo_broker, DomoBrokerConf, DomoBrokerSender};
 use sifis_dht::domocache::DomoEvent;
 
 #[derive(Parser, Debug)]
@@ -34,6 +38,10 @@ struct Opt {
     /// use only loopback iface for libp2p
     #[clap(parse(try_from_str))]
     loopback_only: bool,
+
+    /// size of message buffer
+    #[clap(long)]
+    message_buffer_size: Option<usize>,
 }
 
 #[tokio::main]
@@ -51,11 +59,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         shared_key,
         http_port,
         loopback_only,
+        message_buffer_size,
     } = opt;
 
     env_logger::init();
 
-    let mut stdin = io::BufReader::new(io::stdin()).lines();
+    let stdin = io::BufReader::new(io::stdin()).lines();
     let debug_console = std::env::var("DHT_DEBUG_CONSOLE").is_ok();
 
     let domo_broker_conf = DomoBrokerConf {
@@ -65,27 +74,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
         shared_key,
         http_port,
         loopback_only,
+        message_buffer_size,
     };
 
-    let mut domo_broker = DomoBroker::new(domo_broker_conf).await?;
+    let (domo_broker_sender, domo_broker_receiver) = create_domo_broker(domo_broker_conf).await?;
+
+    let domo_broker_future = domo_broker_receiver.into_stream().for_each(|m| {
+        report_event(&m);
+        ready(())
+    });
 
     if debug_console {
-        loop {
-            tokio::select! {
-                m = domo_broker.event_loop() => report_event(&m),
-
-                line = stdin.next_line() => {
-                    handle_user_input(line, &mut domo_broker).await;
-                },
+        let stdin_future = LinesStream::new(stdin).for_each(|line| async {
+            if let Ok(line) = line {
+                handle_user_input(&line, &domo_broker_sender).await;
             }
-        }
+        });
+        (domo_broker_future, stdin_future).join().await;
     } else {
-        loop {
-            tokio::select! {
-                m = domo_broker.event_loop() => report_event(&m),
-            }
-        }
+        domo_broker_future.await;
     }
+    Ok(())
 }
 
 fn report_event(m: &DomoEvent) {
@@ -101,28 +110,22 @@ fn report_event(m: &DomoEvent) {
     }
 }
 
-async fn handle_user_input(line: io::Result<Option<String>>, domo_broker: &mut DomoBroker) {
-    let line = match line {
-        Err(_) | Ok(None) => return,
-        Ok(Some(s)) => s,
-    };
-
+async fn handle_user_input(line: &str, domo_broker_sender: &DomoBrokerSender) {
     let mut args = line.split(' ');
 
     match args.next() {
         Some("HASH") => {
-            domo_broker.domo_cache.print_cache_hash();
+            domo_broker_sender.print_cache_hash().await;
         }
-        Some("PRINT") => domo_broker.domo_cache.print(),
+        Some("PRINT") => domo_broker_sender.print().await,
         Some("PEERS") => {
-            println!("Own peer ID: {}", domo_broker.domo_cache.local_peer_id);
+            println!("Own peer ID: {}", domo_broker_sender.local_peer_id());
             println!("Peers:");
-            domo_broker.domo_cache.print_peers_cache()
+            domo_broker_sender.print_peers_cache().await
         }
         Some("DEL") => {
             if let (Some(topic_name), Some(topic_uuid)) = (args.next(), args.next()) {
-                domo_broker
-                    .domo_cache
+                domo_broker_sender
                     .delete_value(topic_name, topic_uuid)
                     .await;
             } else {
@@ -138,7 +141,7 @@ async fn handle_user_input(line: io::Result<Option<String>>, domo_broker: &mut D
 
             let val = json!({ "payload": value });
 
-            domo_broker.domo_cache.pub_value(val).await;
+            domo_broker_sender.pub_value(val).await;
         }
         Some("PUT") => {
             let arguments = (args.next(), args.next(), args.next());
@@ -148,8 +151,7 @@ async fn handle_user_input(line: io::Result<Option<String>>, domo_broker: &mut D
 
                 let val = json!({ "payload": value });
 
-                domo_broker
-                    .domo_cache
+                domo_broker_sender
                     .write_value(topic_name, topic_uuid, val)
                     .await;
             } else {

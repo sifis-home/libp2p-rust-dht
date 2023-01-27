@@ -20,129 +20,145 @@ use tokio::sync::mpsc::Sender;
 use serde_json::json;
 
 use crate::websocketmessage::{
-    AsyncWebSocketDomoMessage, SyncWebSocketDomoMessage, SyncWebSocketDomoRequest,
+    AsyncWebSocketDomoMessage, SyncWebSocketDomoRequest, SyncWebSocketDomoRequestMessage,
+    SyncWebSocketDomoResponseMessage,
 };
 use crate::{restmessage, utils};
 
 use std::net::TcpListener;
 
-pub struct WebApiManager {
-    // rest api listening port
-    pub http_port: u16,
-
-    // channel where synchronous web socket requests are sent
-    pub sync_rx_websocket: broadcast::Receiver<SyncWebSocketDomoMessage>,
+#[derive(Debug, Clone)]
+pub struct WebApiManagerSender {
+    // channel where synchronous web socket responses are sent
+    pub sync_tx_websocket_request: broadcast::Sender<SyncWebSocketDomoRequestMessage>,
 
     // channel where synchronous web socket responses are sent
-    pub sync_tx_websocket: broadcast::Sender<SyncWebSocketDomoMessage>,
+    pub sync_tx_websocket_response: broadcast::Sender<SyncWebSocketDomoResponseMessage>,
 
     // channel where asynchronous web socket messages are sent
     pub async_tx_websocket: broadcast::Sender<AsyncWebSocketDomoMessage>,
+}
+
+pub struct WebApiManagerReceiver {
+    // channel where synchronous web socket requests are sent
+    pub sync_rx_websocket_request: broadcast::Receiver<SyncWebSocketDomoRequestMessage>,
+
+    // channel where synchronous web socket requests are sent
+    pub sync_rx_websocket_response: broadcast::Receiver<SyncWebSocketDomoResponseMessage>,
 
     // channel used to receive rest requests
     pub rx_rest: mpsc::Receiver<restmessage::RestMessage>,
 }
 
-impl WebApiManager {
-    pub fn new(http_port: u16) -> Self {
-        //let addr = SocketAddr::from(([127, 0, 0, 1], http_port));
+pub fn create_web_api_manager(http_port: u16) -> (WebApiManagerSender, WebApiManagerReceiver) {
+    //let addr = SocketAddr::from(([127, 0, 0, 1], http_port));
 
-        let mut addr: String = "0.0.0.0:".to_owned();
-        addr.push_str(&http_port.to_string());
+    let mut addr: String = "0.0.0.0:".to_owned();
+    addr.push_str(&http_port.to_string());
 
-        let listener = TcpListener::bind(addr).unwrap();
+    let listener = TcpListener::bind(addr).unwrap();
 
-        #[cfg(unix)]
-        {
-            use nix::sys::socket::{self, sockopt::ReuseAddr, sockopt::ReusePort};
-            use std::os::unix::io::AsRawFd;
-            _ = socket::setsockopt(listener.as_raw_fd(), ReusePort, &true);
+    #[cfg(unix)]
+    {
+        use nix::sys::socket::{self, sockopt::ReuseAddr, sockopt::ReusePort};
+        use std::os::unix::io::AsRawFd;
+        _ = socket::setsockopt(listener.as_raw_fd(), ReusePort, &true);
 
-            _ = socket::setsockopt(listener.as_raw_fd(), ReuseAddr, &true);
-        }
-
-        let (tx_rest, rx_rest) = mpsc::channel(32);
-
-        let tx_get_all = tx_rest.clone();
-
-        let tx_get_topicname = tx_rest.clone();
-
-        let tx_get_topicname_topicuuid = tx_rest.clone();
-
-        let tx_post_topicname_topicuuid = tx_rest.clone();
-
-        let tx_delete_topicname_topicuuid = tx_rest.clone();
-
-        let tx_pub_message = tx_rest;
-
-        let (async_tx_websocket, mut _async_rx_websocket) =
-            broadcast::channel::<AsyncWebSocketDomoMessage>(16);
-
-        let async_tx_websocket_copy = async_tx_websocket.clone();
-
-        let (sync_tx_websocket, sync_rx_websocket) =
-            broadcast::channel::<SyncWebSocketDomoMessage>(16);
-
-        let sync_tx_websocket_copy = sync_tx_websocket.clone();
-
-        let app = Router::new()
-            // `GET /` goes to `root`
-            .route(
-                "/get_all",
-                get(WebApiManager::get_all_handler).layer(Extension(tx_get_all)),
-            )
-            .route(
-                "/topic_name/:topic_name",
-                get(WebApiManager::get_topicname_handler).layer(Extension(tx_get_topicname)),
-            )
-            .route(
-                "/topic_name/:topic_name/topic_uuid/:topic_uuid",
-                get(WebApiManager::get_topicname_topicuuid_handler)
-                    .layer(Extension(tx_get_topicname_topicuuid)),
-            )
-            .route(
-                "/topic_name/:topic_name/topic_uuid/:topic_uuid",
-                post(WebApiManager::post_topicname_topicuuid_handler)
-                    .layer(Extension(tx_post_topicname_topicuuid)),
-            )
-            .route(
-                "/topic_name/:topic_name/topic_uuid/:topic_uuid",
-                delete(WebApiManager::delete_topicname_topicuuid_handler)
-                    .layer(Extension(tx_delete_topicname_topicuuid)),
-            )
-            .route(
-                "/pub",
-                post(WebApiManager::pub_message).layer(Extension(tx_pub_message)),
-            )
-            .route(
-                "/ws",
-                get(WebApiManager::handle_websocket_req)
-                    .layer(Extension(async_tx_websocket_copy))
-                    .layer(Extension(sync_tx_websocket_copy)),
-            )
-            .layer(
-                CorsLayer::new()
-                    .allow_origin(Any)
-                    .allow_methods(Any)
-                    .allow_headers([http::header::CONTENT_TYPE]),
-            );
-
-        tokio::spawn(async move {
-            axum::Server::from_tcp(listener)
-                .unwrap()
-                .serve(app.into_make_service())
-                .await
-        });
-
-        WebApiManager {
-            http_port,
-            sync_rx_websocket,
-            sync_tx_websocket,
-            rx_rest,
-            async_tx_websocket,
-        }
+        _ = socket::setsockopt(listener.as_raw_fd(), ReuseAddr, &true);
     }
 
+    let (tx_rest, rx_rest) = mpsc::channel(32);
+
+    let tx_get_all = tx_rest.clone();
+
+    let tx_get_topicname = tx_rest.clone();
+
+    let tx_get_topicname_topicuuid = tx_rest.clone();
+
+    let tx_post_topicname_topicuuid = tx_rest.clone();
+
+    let tx_delete_topicname_topicuuid = tx_rest.clone();
+
+    let tx_pub_message = tx_rest;
+
+    let (async_tx_websocket, mut _async_rx_websocket) =
+        broadcast::channel::<AsyncWebSocketDomoMessage>(16);
+
+    let async_tx_websocket_copy = async_tx_websocket.clone();
+
+    let (sync_tx_websocket_request, sync_rx_websocket_request) =
+        broadcast::channel::<SyncWebSocketDomoRequestMessage>(16);
+    let (sync_tx_websocket_response, sync_rx_websocket_response) =
+        broadcast::channel::<SyncWebSocketDomoResponseMessage>(16);
+
+    let sync_tx_websocket_copy = sync_tx_websocket_request.clone();
+
+    let app = Router::new()
+        // `GET /` goes to `root`
+        .route(
+            "/get_all",
+            get(WebApiManagerSender::get_all_handler).layer(Extension(tx_get_all)),
+        )
+        .route(
+            "/topic_name/:topic_name",
+            get(WebApiManagerSender::get_topicname_handler).layer(Extension(tx_get_topicname)),
+        )
+        .route(
+            "/topic_name/:topic_name/topic_uuid/:topic_uuid",
+            get(WebApiManagerSender::get_topicname_topicuuid_handler)
+                .layer(Extension(tx_get_topicname_topicuuid)),
+        )
+        .route(
+            "/topic_name/:topic_name/topic_uuid/:topic_uuid",
+            post(WebApiManagerSender::post_topicname_topicuuid_handler)
+                .layer(Extension(tx_post_topicname_topicuuid)),
+        )
+        .route(
+            "/topic_name/:topic_name/topic_uuid/:topic_uuid",
+            delete(WebApiManagerSender::delete_topicname_topicuuid_handler)
+                .layer(Extension(tx_delete_topicname_topicuuid)),
+        )
+        .route(
+            "/pub",
+            post(WebApiManagerSender::pub_message).layer(Extension(tx_pub_message)),
+        )
+        .route(
+            "/ws",
+            get(WebApiManagerSender::handle_websocket_req)
+                .layer(Extension(async_tx_websocket_copy))
+                .layer(Extension(sync_tx_websocket_copy))
+                .layer(Extension(sync_tx_websocket_response.clone())),
+        )
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers([http::header::CONTENT_TYPE]),
+        );
+
+    tokio::spawn(async move {
+        axum::Server::from_tcp(listener)
+            .unwrap()
+            .serve(app.into_make_service())
+            .await
+    });
+
+    let sender = WebApiManagerSender {
+        sync_tx_websocket_request,
+        sync_tx_websocket_response,
+        async_tx_websocket,
+    };
+
+    let receiver = WebApiManagerReceiver {
+        sync_rx_websocket_request,
+        sync_rx_websocket_response,
+        rx_rest,
+    };
+
+    (sender, receiver)
+}
+
+impl WebApiManagerSender {
     async fn delete_topicname_topicuuid_handler(
         Path((topic_name, topic_uuid)): Path<(String, String)>,
         Extension(tx_rest): Extension<Sender<restmessage::RestMessage>>,
@@ -269,33 +285,30 @@ impl WebApiManager {
     async fn handle_websocket_req(
         ws: WebSocketUpgrade,
         Extension(async_tx_ws): Extension<broadcast::Sender<AsyncWebSocketDomoMessage>>,
-        Extension(sync_tx_ws): Extension<broadcast::Sender<SyncWebSocketDomoMessage>>,
+        Extension(sync_tx_ws_request): Extension<
+            broadcast::Sender<SyncWebSocketDomoRequestMessage>,
+        >,
+        Extension(sync_tx_ws_response): Extension<
+            broadcast::Sender<SyncWebSocketDomoResponseMessage>,
+        >,
     ) -> impl IntoResponse {
         // channel for receiving async messages
         let mut async_rx_ws = async_tx_ws.subscribe();
 
-        // channel for receiving sync messages
-        let mut sync_rx_ws = sync_tx_ws.subscribe();
+        // channel for receiving sync messages responses
+        let mut sync_rx_ws_response = sync_tx_ws_response.subscribe();
 
         ws.on_upgrade(|mut socket| async move {
             let my_id = utils::get_epoch_ms().to_string();
 
             loop {
                 tokio::select! {
-                        sync_rx = sync_rx_ws.recv() => {
+                        sync_rx = sync_rx_ws_response.recv() => {
 
-                            let msg: SyncWebSocketDomoMessage = sync_rx.unwrap();
-
-                            let req = msg.request.clone();
-
-                            if let SyncWebSocketDomoRequest::Response { value: _ } = msg.request {
-                                 if msg.ws_client_id == my_id {
-                                     let _ret = socket.send(
-                                     Message::Text(serde_json::to_string(&req).unwrap()))
-                                     .await;
-                                 }
+                            let msg = sync_rx.unwrap();
+                            if msg.ws_client_id == my_id {
+                                let _ret = socket.send(Message::Text(msg.response)).await;
                             }
-
                         }
                         Some(msg) = socket.recv() => {
 
@@ -310,13 +323,13 @@ impl WebApiManager {
 
                                     let req : SyncWebSocketDomoRequest = serde_json::from_str(&message).unwrap();
 
-                                    let msg = SyncWebSocketDomoMessage {
+                                    let msg = SyncWebSocketDomoRequestMessage {
                                         ws_client_id: my_id.clone(),
                                         req_id: my_id.clone(),
                                         request: req
                                     };
 
-                                    let _ret = sync_tx_ws.send(msg);
+                                    let _ret = sync_tx_ws_request.send(msg);
 
                                 }
                                 Message::Close(_) => {
@@ -338,27 +351,27 @@ impl WebApiManager {
 
 #[cfg(test)]
 mod tests {
+    use futures_concurrency::future::Join;
+
     #[tokio::test]
     async fn test_webapimanager_rest() {
-        let mut webmanager = super::WebApiManager::new(1234);
+        let (_webmanager_sender, mut webmanager_receiver) = super::create_web_api_manager(1234);
 
-        let task = tokio::spawn(async {
+        let task = async {
             let _http_call = reqwest::get("http://localhost:1234/get_all").await;
-        });
+        };
 
-        let ret = webmanager.rx_rest.recv().await;
+        let check = async {
+            let ret = webmanager_receiver.rx_rest.recv().await;
 
-        let mut is_get_all = false;
+            let message = ret.expect("success");
+            let  crate::restmessage::RestMessage::GetAll { responder } = message else {
+                panic!("unexpected rest message");
+            };
+            responder.send(Ok(serde_json::json!({}))).unwrap();
+        };
 
-        let message = ret.expect("success");
-        if let crate::restmessage::RestMessage::GetAll { responder } = message {
-            is_get_all = true;
-            let _r = responder.send(Ok(serde_json::json!({})));
-        }
-
-        assert!(is_get_all);
-
-        let _ret = task.await;
+        (task, check).join().await;
     }
 
     #[tokio::test]
@@ -367,29 +380,32 @@ mod tests {
 
         use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
-        let mut webmanager = super::WebApiManager::new(1235);
+        let (_webmanager_sender, mut webmanager_receiver) = super::create_web_api_manager(1235);
 
-        let task = tokio::spawn(async {
+        let task = async {
             let url = url::Url::parse("ws://localhost:1235/ws").unwrap();
 
             let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
 
             let (mut write, _read) = ws_stream.split();
 
-            let _ret = write
+            write
                 .send(Message::Text("\"RequestGetAll\"".to_owned()))
-                .await;
-        });
+                .await
+                .unwrap();
+        };
 
-        let ret = webmanager.sync_rx_websocket.recv().await;
+        let check = async {
+            let ret = webmanager_receiver.sync_rx_websocket_request.recv().await;
 
-        let message = ret.expect("success");
+            let message = ret.expect("success");
 
-        assert!(matches!(
-            message.request,
-            crate::websocketmessage::SyncWebSocketDomoRequest::RequestGetAll
-        ));
+            assert!(matches!(
+                message.request,
+                crate::websocketmessage::SyncWebSocketDomoRequest::RequestGetAll
+            ));
+        };
 
-        let _ret = task.await;
+        (task, check).join().await;
     }
 }

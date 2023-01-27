@@ -1,21 +1,32 @@
-use std::error::Error;
+use std::future::ready;
 use std::io::ErrorKind;
 
-use crate::domocache::{DomoCache, DomoEvent};
+use crate::domocache::{self, DomoCacheReceiver, DomoCacheSender, DomoEvent, Message};
 use crate::domopersistentstorage::SqliteStorage;
 use crate::restmessage;
-use crate::webapimanager::WebApiManager;
+use crate::webapimanager::{create_web_api_manager, WebApiManagerReceiver, WebApiManagerSender};
 use crate::websocketmessage::{
-    AsyncWebSocketDomoMessage, SyncWebSocketDomoMessage, SyncWebSocketDomoRequest,
+    AsyncWebSocketDomoMessage, SyncWebSocketDomoRequest, SyncWebSocketDomoRequestMessage,
+    SyncWebSocketDomoResponseMessage,
 };
+use futures::{stream, FutureExt, Stream, StreamExt};
+use futures_concurrency::future::Join;
+use futures_concurrency::stream::Merge;
 use libp2p::identity;
 use rsa::pkcs8::EncodePrivateKey;
 use rsa::RsaPrivateKey;
-use serde_json::json;
+use tokio::sync::{broadcast, mpsc};
+use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 
-pub struct DomoBroker {
-    pub domo_cache: DomoCache<SqliteStorage>,
-    pub web_manager: WebApiManager,
+pub struct DomoBrokerSender {
+    domo_cache_sender: DomoCacheSender,
+}
+
+pub struct DomoBrokerReceiver {
+    domo_cache_sender: DomoCacheSender,
+    domo_cache_receiver: DomoCacheReceiver<SqliteStorage>,
+    web_manager_receiver: WebApiManagerReceiver,
+    web_manager_sender: WebApiManagerSender,
 }
 
 pub struct DomoBrokerConf {
@@ -25,274 +36,316 @@ pub struct DomoBrokerConf {
     pub shared_key: String,
     pub http_port: u16,
     pub loopback_only: bool,
+    pub message_buffer_size: Option<usize>,
 }
 
-impl DomoBroker {
-    pub async fn new(conf: DomoBrokerConf) -> Result<Self, String> {
-        if conf.sqlite_file.is_empty() {
-            return Err(String::from("sqlite_file path needed"));
-        }
-
-        let storage = SqliteStorage::new(conf.sqlite_file, conf.is_persistent_cache);
-
-        // Create a random local key.
-        let mut pkcs8_der = if let Some(pk_path) = conf.private_key_file {
-            match std::fs::read(&pk_path) {
-                Ok(pem) => {
-                    let der = pem_rfc7468::decode_vec(&pem)
-                        .map_err(|e| format!("Couldn't decode pem: {e:?}"))?;
-                    der.1
-                }
-                Err(e) if e.kind() == ErrorKind::NotFound => {
-                    // Generate a new key and put it into the file at the given path
-                    let (pem, der) = generate_rsa_key();
-                    std::fs::write(pk_path, pem).expect("Couldn't save ");
-                    der
-                }
-                Err(e) => Err(format!("Couldn't load key file: {e:?}"))?,
-            }
-        } else {
-            generate_rsa_key().1
-        };
-        let local_key = identity::Keypair::rsa_from_pkcs8(&mut pkcs8_der)
-            .map_err(|e| format!("Couldn't load key: {e:?}"))?;
-
-        let domo_cache = DomoCache::new(
-            conf.is_persistent_cache,
-            storage,
-            conf.shared_key,
-            local_key,
-            conf.loopback_only,
-        )
-        .await;
-
-        let web_manager = WebApiManager::new(conf.http_port);
-
-        Ok(DomoBroker {
-            domo_cache,
-            web_manager,
-        })
+pub async fn create_domo_broker(
+    conf: DomoBrokerConf,
+) -> Result<(DomoBrokerSender, DomoBrokerReceiver), String> {
+    if conf.sqlite_file.is_empty() {
+        return Err(String::from("sqlite_file path needed"));
     }
 
-    pub async fn event_loop(&mut self) -> DomoEvent {
-        loop {
-            tokio::select! {
-                webs_message = self.web_manager.sync_rx_websocket.recv() => {
+    let storage = SqliteStorage::new(conf.sqlite_file, conf.is_persistent_cache);
+
+    // Create a random local key.
+    let mut pkcs8_der = if let Some(pk_path) = conf.private_key_file {
+        match std::fs::read(&pk_path) {
+            Ok(pem) => {
+                let der = pem_rfc7468::decode_vec(&pem)
+                    .map_err(|e| format!("Couldn't decode pem: {e:?}"))?;
+                der.1
+            }
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                // Generate a new key and put it into the file at the given path
+                let (pem, der) = generate_rsa_key();
+                std::fs::write(pk_path, pem).expect("Couldn't save ");
+                der
+            }
+            Err(e) => Err(format!("Couldn't load key file: {e:?}"))?,
+        }
+    } else {
+        generate_rsa_key().1
+    };
+    let local_key = identity::Keypair::rsa_from_pkcs8(&mut pkcs8_der)
+        .map_err(|e| format!("Couldn't load key: {e:?}"))?;
+
+    let (domo_cache_sender, domo_cache_receiver) = domocache::channel(
+        conf.is_persistent_cache,
+        storage,
+        conf.shared_key,
+        local_key,
+        conf.loopback_only,
+        conf.message_buffer_size,
+    )
+    .await;
+
+    let (web_manager_sender, web_manager_receiver) = create_web_api_manager(conf.http_port);
+
+    let sender = DomoBrokerSender {
+        domo_cache_sender: domo_cache_sender.clone(),
+    };
+
+    let receiver = DomoBrokerReceiver {
+        web_manager_receiver,
+        domo_cache_sender,
+        domo_cache_receiver,
+        web_manager_sender,
+    };
+
+    Ok((sender, receiver))
+}
+
+impl DomoBrokerSender {
+    #[inline]
+    pub fn local_peer_id(&self) -> &str {
+        self.domo_cache_sender.local_peer_id()
+    }
+
+    #[inline]
+    pub async fn print_peers_cache(&self) {
+        self.domo_cache_sender.print_peers_cache().await;
+    }
+
+    #[inline]
+    pub async fn print(&self) {
+        self.domo_cache_sender.print().await;
+    }
+
+    #[inline]
+    pub async fn print_cache_hash(&self) {
+        self.domo_cache_sender.print_cache_hash().await;
+    }
+
+    #[inline]
+    pub async fn write_value(&self, topic_name: &str, topic_uuid: &str, value: serde_json::Value) {
+        self.domo_cache_sender
+            .write_value(topic_name, topic_uuid, value)
+            .await;
+    }
+
+    #[inline]
+    pub async fn pub_value(&self, value: serde_json::Value) {
+        self.domo_cache_sender.pub_value(value).await;
+    }
+
+    #[inline]
+    pub async fn delete_value(&self, topic_name: &str, topic_uuid: &str) {
+        self.domo_cache_sender
+            .delete_value(topic_name, topic_uuid)
+            .await;
+    }
+}
+
+impl DomoBrokerReceiver {
+    pub fn into_stream(self) -> impl Stream<Item = DomoEvent> + 'static {
+        let Self {
+            web_manager_receiver:
+                WebApiManagerReceiver {
+                    sync_rx_websocket_request,
+                    rx_rest,
+                    ..
+                },
+            domo_cache_sender,
+            domo_cache_receiver,
+            web_manager_sender:
+                WebApiManagerSender {
+                    sync_tx_websocket_response,
+                    async_tx_websocket,
+                    ..
+                },
+        } = self;
+
+        let domo_cache_sender = domo_cache_sender.sender;
+
+        let websocket_future = {
+            let domo_cache_sender = domo_cache_sender.clone();
+            BroadcastStream::new(sync_rx_websocket_request).for_each({
+                move |webs_message| {
                     let message = webs_message.unwrap();
-                    self.handle_websocket_sync_request(message).await;
-                },
-
-                Some(rest_message) = self.web_manager.rx_rest.recv() => {
-                    self.handle_rest_request(rest_message).await;
-                },
-
-                m = self.domo_cache.cache_event_loop() => {
-                    let ret = self.handle_cache_event_loop(m);
-                    return ret;
+                    let domo_cache_sender = domo_cache_sender.clone();
+                    let sync_tx_websocket_response = sync_tx_websocket_response.clone();
+                    handle_websocket_sync_request(
+                        domo_cache_sender,
+                        sync_tx_websocket_response,
+                        message,
+                    )
                 }
-            }
+            })
+        };
+
+        let web_manager_future = ReceiverStream::new(rx_rest).for_each(move |rest_message| {
+            handle_rest_request(domo_cache_sender.clone(), dbg!(rest_message))
+        });
+
+        (
+            domo_cache_receiver.into_stream().map(move |message| {
+                let out = message.map_or(DomoEvent::None, |message| {
+                    handle_domo_event(async_tx_websocket.clone(), message)
+                });
+                Some(out)
+            }),
+            stream::once(
+                (websocket_future, web_manager_future)
+                    .join()
+                    .map(|((), ())| None),
+            ),
+        )
+            .merge()
+            .filter_map(ready)
+    }
+}
+
+async fn handle_websocket_sync_request(
+    domo_cache_sender: mpsc::Sender<Message>,
+    sync_tx_websocket_response: broadcast::Sender<SyncWebSocketDomoResponseMessage>,
+    message: SyncWebSocketDomoRequestMessage,
+) {
+    let SyncWebSocketDomoRequestMessage {
+        ws_client_id,
+        req_id,
+        request,
+    } = message;
+    let prepared_message = Message::websocket(ws_client_id, req_id, sync_tx_websocket_response);
+
+    match request {
+        SyncWebSocketDomoRequest::RequestGetAll => {
+            println!("WebSocket RequestGetAll");
+
+            prepared_message.get_all(&domo_cache_sender).await;
+        }
+
+        SyncWebSocketDomoRequest::RequestGetTopicName { topic_name } => {
+            println!("WebSocket RequestGetTopicName");
+
+            prepared_message
+                .get_topic_name(topic_name, &domo_cache_sender)
+                .await;
+        }
+
+        SyncWebSocketDomoRequest::RequestGetTopicUUID {
+            topic_name,
+            topic_uuid,
+        } => {
+            println!("WebSocket RequestGetTopicUUID");
+
+            prepared_message
+                .get_topic_uuid(topic_name, topic_uuid, &domo_cache_sender)
+                .await;
+        }
+
+        SyncWebSocketDomoRequest::RequestDeleteTopicUUID {
+            topic_name,
+            topic_uuid,
+        } => {
+            println!("WebSocket RequestDeleteTopicUUID");
+
+            prepared_message
+                .delete_topic_uuid(topic_name, topic_uuid, &domo_cache_sender)
+                .await;
+        }
+
+        SyncWebSocketDomoRequest::RequestPostTopicUUID {
+            topic_name,
+            topic_uuid,
+            value,
+        } => {
+            println!("WebSocket RequestPostTopicUUID");
+
+            prepared_message
+                .post_topic_uuid(topic_name, topic_uuid, value, &domo_cache_sender)
+                .await;
+        }
+
+        SyncWebSocketDomoRequest::RequestPubMessage { value } => {
+            println!("WebSocket RequestPubMessage");
+            prepared_message
+                .pub_message(value, &domo_cache_sender)
+                .await;
         }
     }
+}
 
-    async fn handle_websocket_sync_request(&mut self, message: SyncWebSocketDomoMessage) {
-        match message.request {
-            SyncWebSocketDomoRequest::RequestGetAll => {
-                println!("WebSocket RequestGetAll");
+fn handle_domo_event(
+    async_tx_websocket: broadcast::Sender<AsyncWebSocketDomoMessage>,
+    m: DomoEvent,
+) -> DomoEvent {
+    match m {
+        DomoEvent::PersistentData(m) => {
+            println!(
+                "Persistent message received {} {}",
+                m.topic_name, m.topic_uuid
+            );
 
-                let resp = SyncWebSocketDomoRequest::Response {
-                    value: self.domo_cache.get_all(),
-                };
-
-                let r = SyncWebSocketDomoMessage {
-                    ws_client_id: message.ws_client_id,
-                    req_id: message.req_id,
-                    request: resp,
-                };
-
-                let _ret = self.web_manager.sync_tx_websocket.send(r);
-            }
-
-            SyncWebSocketDomoRequest::RequestGetTopicName { topic_name } => {
-                println!("WebSocket RequestGetTopicName");
-
-                let ret = self.domo_cache.get_topic_name(&topic_name);
-
-                let value = ret.unwrap_or_else(|_| json!([]));
-
-                let resp = SyncWebSocketDomoRequest::Response { value };
-
-                let r = SyncWebSocketDomoMessage {
-                    ws_client_id: message.ws_client_id,
-                    req_id: message.req_id,
-                    request: resp,
-                };
-
-                let _ret = self.web_manager.sync_tx_websocket.send(r);
-            }
-
-            SyncWebSocketDomoRequest::RequestGetTopicUUID {
-                topic_name,
-                topic_uuid,
-            } => {
-                println!("WebSocket RequestGetTopicUUID");
-
-                let ret = self.domo_cache.get_topic_uuid(&topic_name, &topic_uuid);
-                let value = ret.unwrap_or_else(|_| json!({}));
-
-                let resp = SyncWebSocketDomoRequest::Response { value };
-
-                let r = SyncWebSocketDomoMessage {
-                    ws_client_id: message.ws_client_id,
-                    req_id: message.req_id,
-                    request: resp,
-                };
-
-                let _ret = self.web_manager.sync_tx_websocket.send(r);
-            }
-
-            SyncWebSocketDomoRequest::RequestDeleteTopicUUID {
-                topic_name,
-                topic_uuid,
-            } => {
-                self.domo_cache.delete_value(&topic_name, &topic_uuid).await;
-                println!("WebSocket RequestDeleteTopicUUID");
-            }
-
-            SyncWebSocketDomoRequest::RequestPostTopicUUID {
-                topic_name,
-                topic_uuid,
-                value,
-            } => {
-                println!("WebSocket RequestPostTopicUUID");
-
-                self.domo_cache
-                    .write_value(&topic_name, &topic_uuid, value.clone())
-                    .await;
-            }
-
-            SyncWebSocketDomoRequest::RequestPubMessage { value } => {
-                println!("WebSocket RequestPubMessage");
-                self.domo_cache.pub_value(value.clone()).await;
-            }
-
-            _ => {}
+            let m2 = m.clone();
+            let _ret = async_tx_websocket.send(AsyncWebSocketDomoMessage::Persistent {
+                topic_name: m.topic_name,
+                topic_uuid: m.topic_uuid,
+                value: m.value,
+                deleted: m.deleted,
+            });
+            DomoEvent::PersistentData(m2)
         }
-    }
+        DomoEvent::VolatileData(m) => {
+            println!("Volatile message {m}");
 
-    async fn handle_rest_request(&mut self, rest_message: restmessage::RestMessage) {
-        match rest_message {
-            restmessage::RestMessage::GetAll { responder } => {
-                let resp = self.domo_cache.get_all();
-                match responder.send(Ok(resp)) {
-                    Ok(_m) => log::debug!("Rest response ok"),
-                    Err(_e) => log::debug!("Error while sending Rest Reponse"),
-                }
-            }
-            restmessage::RestMessage::GetTopicName {
-                topic_name,
-                responder,
-            } => {
-                let resp = self.domo_cache.get_topic_name(&topic_name);
-                if let Ok(resp) = resp {
-                    match responder.send(Ok(resp)) {
-                        Ok(_m) => log::debug!("Rest response ok"),
-                        Err(_e) => log::debug!("Error while sending Rest Reponse"),
-                    }
-                } else {
-                    let resp = json!([]);
-                    match responder.send(Ok(resp)) {
-                        Ok(_m) => log::debug!("Rest response ok"),
-                        Err(_e) => log::debug!("Error while sending Rest Reponse"),
-                    }
-                }
-            }
-            restmessage::RestMessage::GetTopicUUID {
-                topic_name,
-                topic_uuid,
-                responder,
-            } => {
-                let resp = self.domo_cache.get_topic_uuid(&topic_name, &topic_uuid);
+            let m2 = m.clone();
+            let _ret = async_tx_websocket.send(AsyncWebSocketDomoMessage::Volatile { value: m });
 
-                if let Ok(resp) = resp {
-                    match responder.send(Ok(resp)) {
-                        Ok(_m) => log::debug!("Rest response ok"),
-                        Err(_e) => log::debug!("Error while sending Rest Reponse"),
-                    }
-                } else {
-                    let resp = json!({});
-                    match responder.send(Ok(resp)) {
-                        Ok(_m) => log::debug!("Rest response ok"),
-                        Err(_e) => log::debug!("Error while sending Rest Reponse"),
-                    }
-                }
-            }
-            restmessage::RestMessage::PostTopicUUID {
-                topic_name,
-                topic_uuid,
-                value,
-                responder,
-            } => {
-                self.domo_cache
-                    .write_value(&topic_name, &topic_uuid, value.clone())
-                    .await;
-                match responder.send(Ok(value)) {
-                    Ok(_m) => log::debug!("Rest response ok"),
-                    Err(_e) => log::debug!("Error while sending Rest Reponse"),
-                }
-            }
-            restmessage::RestMessage::DeleteTopicUUID {
-                topic_name,
-                topic_uuid,
-                responder,
-            } => {
-                self.domo_cache.delete_value(&topic_name, &topic_uuid).await;
-                match responder.send(Ok(json!({}))) {
-                    Ok(_m) => log::debug!("Rest response ok"),
-                    Err(_e) => log::debug!("Error while sending Rest Reponse"),
-                }
-            }
-            restmessage::RestMessage::PubMessage { value, responder } => {
-                self.domo_cache.pub_value(value.clone()).await;
-                match responder.send(Ok(value)) {
-                    Ok(_m) => log::debug!("Rest response ok"),
-                    Err(_e) => log::debug!("Error while sending Rest Reponse"),
-                }
-            }
+            DomoEvent::VolatileData(m2)
         }
+        DomoEvent::None => DomoEvent::None,
     }
+}
 
-    fn handle_cache_event_loop(&mut self, m: Result<DomoEvent, Box<dyn Error>>) -> DomoEvent {
-        match m {
-            Ok(DomoEvent::None) => DomoEvent::None,
-            Ok(DomoEvent::PersistentData(m)) => {
-                println!(
-                    "Persistent message received {} {}",
-                    m.topic_name, m.topic_uuid
-                );
-
-                let m2 = m.clone();
-                let _ret = self.web_manager.async_tx_websocket.send(
-                    AsyncWebSocketDomoMessage::Persistent {
-                        topic_name: m.topic_name,
-                        topic_uuid: m.topic_uuid,
-                        value: m.value,
-                        deleted: m.deleted,
-                    },
-                );
-                DomoEvent::PersistentData(m2)
-            }
-            Ok(DomoEvent::VolatileData(m)) => {
-                println!("Volatile message {m}");
-
-                let m2 = m.clone();
-                let _ret = self
-                    .web_manager
-                    .async_tx_websocket
-                    .send(AsyncWebSocketDomoMessage::Volatile { value: m });
-
-                DomoEvent::VolatileData(m2)
-            }
-            _ => DomoEvent::None,
+async fn handle_rest_request(
+    domo_cache_sender: mpsc::Sender<Message>,
+    rest_message: restmessage::RestMessage,
+) {
+    match rest_message {
+        restmessage::RestMessage::GetAll { responder } => {
+            Message::rest(responder).get_all(&domo_cache_sender).await;
+        }
+        restmessage::RestMessage::GetTopicName {
+            topic_name,
+            responder,
+        } => {
+            Message::rest(responder)
+                .get_topic_name(topic_name, &domo_cache_sender)
+                .await;
+        }
+        restmessage::RestMessage::GetTopicUUID {
+            topic_name,
+            topic_uuid,
+            responder,
+        } => {
+            Message::rest(responder)
+                .get_topic_uuid(topic_name, topic_uuid, &domo_cache_sender)
+                .await;
+        }
+        restmessage::RestMessage::PostTopicUUID {
+            topic_name,
+            topic_uuid,
+            value,
+            responder,
+        } => {
+            Message::rest(responder)
+                .post_topic_uuid(topic_name, topic_uuid, value, &domo_cache_sender)
+                .await;
+        }
+        restmessage::RestMessage::DeleteTopicUUID {
+            topic_name,
+            topic_uuid,
+            responder,
+        } => {
+            Message::rest(responder)
+                .delete_topic_uuid(topic_name, topic_uuid, &domo_cache_sender)
+                .await;
+        }
+        restmessage::RestMessage::PubMessage { value, responder } => {
+            Message::rest(responder)
+                .pub_message(value, &domo_cache_sender)
+                .await;
         }
     }
 }
@@ -312,10 +365,19 @@ fn generate_rsa_key() -> (Vec<u8>, Vec<u8>) {
 
 #[cfg(test)]
 mod tests {
-    use crate::domobroker::DomoBroker;
+    use std::future::ready;
+
+    use futures::{pin_mut, FutureExt, StreamExt};
+    use futures_concurrency::future::{Join, Race};
+    use serde_json::json;
+
+    use crate::domobroker::DomoBrokerSender;
+    use crate::domocache::PostTopicUuidResponse;
     use crate::websocketmessage::{AsyncWebSocketDomoMessage, SyncWebSocketDomoRequest};
 
-    async fn setup_broker(http_port: u16) -> DomoBroker {
+    use super::DomoBrokerReceiver;
+
+    async fn setup_broker(http_port: u16) -> (DomoBrokerSender, DomoBrokerReceiver) {
         let sqlite_file = crate::domopersistentstorage::SQLITE_MEMORY_STORAGE.to_owned();
         let domo_broker_conf = super::DomoBrokerConf {
             sqlite_file,
@@ -326,337 +388,223 @@ mod tests {
             private_key_file: None,
             http_port,
             loopback_only: false,
+            message_buffer_size: None,
         };
 
-        super::DomoBroker::new(domo_broker_conf).await.unwrap()
+        super::create_domo_broker(domo_broker_conf).await.unwrap()
     }
 
     #[tokio::test]
     async fn domo_broker_empty_cache() {
-        use tokio::sync::mpsc;
+        let (_domo_broker_sender, domo_broker_receiver) = setup_broker(3000).await;
 
-        let mut domo_broker = setup_broker(3000).await;
-
-        let (tx_rest, mut rx_rest) = mpsc::channel(1);
-
-        let hnd = tokio::spawn(async move {
+        let hnd = async move {
             let http_call = reqwest::get("http://localhost:3000/get_all").await.unwrap();
 
-            let result: serde_json::Value =
-                serde_json::from_str(&http_call.text().await.unwrap()).unwrap();
+            let response: serde_json::Value = http_call.json().await.unwrap();
+            assert_eq!(response, json!([]));
+        };
 
-            let _ret = tx_rest.send(result).await;
-        });
-
-        let mut stopped = false;
-        while !stopped {
-            tokio::select! {
-                _m = domo_broker.event_loop() => {},
-                result = rx_rest.recv() => {
-                    let result = result.unwrap();
-                    stopped = true;
-                    assert_eq!(result, serde_json::json!([]));
-                }
-            }
-        }
-
-        let _ret = hnd.await;
+        (
+            domo_broker_receiver.into_stream().for_each(|_e| ready(())),
+            hnd,
+        )
+            .race()
+            .await;
     }
 
     #[tokio::test]
     async fn domo_broker_rest_get_all() {
-        use tokio::sync::mpsc;
+        let (domo_broker_sender, domo_broker_receiver) = setup_broker(3001).await;
 
-        let mut domo_broker = setup_broker(3001).await;
+        let hnd = async move {
+            domo_broker_sender
+                .write_value("Domo::Light", "uno", serde_json::json!({"connected": true}))
+                .await;
 
-        domo_broker
-            .domo_cache
-            .write_value("Domo::Light", "uno", serde_json::json!({"connected": true}))
-            .await;
+            domo_broker_sender
+                .write_value("Domo::Light", "due", serde_json::json!({"connected": true}))
+                .await;
 
-        domo_broker
-            .domo_cache
-            .write_value("Domo::Light", "due", serde_json::json!({"connected": true}))
-            .await;
-
-        let (tx_rest, mut rx_rest) = mpsc::channel(1);
-
-        let hnd = tokio::spawn(async move {
             let http_call = reqwest::get("http://localhost:3001/get_all").await.unwrap();
 
-            let result: serde_json::Value =
-                serde_json::from_str(&http_call.text().await.unwrap()).unwrap();
-            let _ret = tx_rest.send(result).await;
-        });
+            let response: serde_json::Value = http_call.json().await.unwrap();
+            assert_eq!(
+                response,
+                serde_json::json!([
+                    {
+                        "topic_name": "Domo::Light",
+                        "topic_uuid": "due",
+                        "value": {
+                            "connected": true
+                        }
+                    },
+                    {
+                        "topic_name": "Domo::Light",
+                        "topic_uuid": "uno",
+                        "value": {
+                            "connected": true
+                        }
+                    }
+                ])
+            );
+        };
 
-        let mut stopped = false;
-
-        while !stopped {
-            tokio::select! {
-                _m = domo_broker.event_loop() => {
-
-                },
-                result = rx_rest.recv() => {
-
-                    let result = result.unwrap();
-
-                    assert_eq!(
-                        result,
-                        serde_json::json!([
-                            {
-                                "topic_name": "Domo::Light",
-                                "topic_uuid": "due",
-                                "value": {
-                                    "connected": true
-                                }
-                            },
-                            {
-                                "topic_name": "Domo::Light",
-                                "topic_uuid": "uno",
-                                "value": {
-                                    "connected": true
-                                }
-                            }
-                        ])
-                    );
-                    stopped = true;
-                }
-            }
-        }
-
-        let _ret = hnd.await;
+        (
+            domo_broker_receiver.into_stream().for_each(|_e| ready(())),
+            hnd,
+        )
+            .race()
+            .await;
     }
 
     #[tokio::test]
     async fn domo_broker_rest_get_topicname() {
-        use tokio::sync::mpsc;
+        let (domo_broker_sender, domo_broker_receiver) = setup_broker(3002).await;
 
-        let mut domo_broker = setup_broker(3002).await;
+        let hnd = async move {
+            domo_broker_sender
+                .write_value("Domo::Light", "uno", serde_json::json!({"connected": true}))
+                .await;
 
-        domo_broker
-            .domo_cache
-            .write_value("Domo::Light", "uno", serde_json::json!({"connected": true}))
-            .await;
+            domo_broker_sender
+                .write_value(
+                    "Domo::Socket",
+                    "due",
+                    serde_json::json!({"connected": true}),
+                )
+                .await;
 
-        domo_broker
-            .domo_cache
-            .write_value(
-                "Domo::Socket",
-                "due",
-                serde_json::json!({"connected": true}),
-            )
-            .await;
-
-        let (tx_rest, mut rx_rest) = mpsc::channel(1);
-
-        let hnd = tokio::spawn(async move {
             let http_call = reqwest::get("http://localhost:3002/topic_name/Domo::Light")
                 .await
                 .unwrap();
 
-            let result: serde_json::Value =
-                serde_json::from_str(&http_call.text().await.unwrap()).unwrap();
-            let _ret = tx_rest.send(result).await;
-        });
+            let result: Result<serde_json::Value, String> = http_call.json().await.unwrap();
+            assert_eq!(
+                result.unwrap(),
+                serde_json::json!([
+                    {
+                        "topic_name": "Domo::Light",
+                        "topic_uuid": "uno",
+                        "value": {
+                            "connected": true
+                        }
+                    }
+                ])
+            );
+        };
 
-        let mut stopped = false;
-
-        while !stopped {
-            tokio::select! {
-                _m = domo_broker.event_loop() => {
-
-                },
-                result = rx_rest.recv() => {
-
-                    let result = result.unwrap();
-
-                    assert_eq!(
-                        result,
-                        serde_json::json!([
-                            {
-                                "topic_name": "Domo::Light",
-                                "topic_uuid": "uno",
-                                "value": {
-                                    "connected": true
-                                }
-                            }
-                        ])
-                    );
-                    stopped = true;
-                }
-            }
-        }
-
-        let _ret = hnd.await;
+        (
+            domo_broker_receiver.into_stream().for_each(|_e| ready(())),
+            hnd,
+        )
+            .race()
+            .await;
     }
 
     #[tokio::test]
     async fn domo_broker_rest_get_topicuuid() {
-        use tokio::sync::mpsc;
+        let (domo_broker_sender, domo_broker_receiver) = setup_broker(3003).await;
 
-        let mut domo_broker = setup_broker(3003).await;
+        let hnd = async move {
+            domo_broker_sender
+                .write_value("Domo::Light", "uno", serde_json::json!({"connected": true}))
+                .await;
 
-        domo_broker
-            .domo_cache
-            .write_value("Domo::Light", "uno", serde_json::json!({"connected": true}))
-            .await;
+            domo_broker_sender
+                .write_value(
+                    "Domo::Socket",
+                    "due",
+                    serde_json::json!({"connected": true}),
+                )
+                .await;
 
-        domo_broker
-            .domo_cache
-            .write_value(
-                "Domo::Socket",
-                "due",
-                serde_json::json!({"connected": true}),
-            )
-            .await;
-
-        let (tx_rest, mut rx_rest) = mpsc::channel(1);
-
-        let hnd = tokio::spawn(async move {
             let http_call =
                 reqwest::get("http://localhost:3003/topic_name/Domo::Light/topic_uuid/uno")
                     .await
                     .unwrap();
 
-            let result: serde_json::Value =
-                serde_json::from_str(&http_call.text().await.unwrap()).unwrap();
-            let _ret = tx_rest.send(result).await;
-        });
+            let result: Result<serde_json::Value, String> = http_call.json().await.unwrap();
+            assert_eq!(
+                result.unwrap(),
+                serde_json::json!(
+                    {
+                        "topic_name": "Domo::Light",
+                        "topic_uuid": "uno",
+                        "value": {
+                            "connected": true
+                        }
+                    }
+                )
+            );
+        };
 
-        let mut stopped = false;
-
-        while !stopped {
-            tokio::select! {
-                _m = domo_broker.event_loop() => {
-
-                },
-                result = rx_rest.recv() => {
-
-                    let result = result.unwrap();
-
-                    assert_eq!(
-                        result,
-                        serde_json::json!(
-                            {
-                                "topic_name": "Domo::Light",
-                                "topic_uuid": "uno",
-                                "value": {
-                                    "connected": true
-                                }
-                            }
-                        )
-                    );
-                    stopped = true;
-                }
-            }
-        }
-
-        let _ret = hnd.await;
+        (
+            domo_broker_receiver.into_stream().for_each(|_e| ready(())),
+            hnd,
+        )
+            .race()
+            .await;
     }
 
     #[tokio::test]
     async fn domo_broker_rest_get_topicname_not_present() {
-        use tokio::sync::mpsc;
+        let (domo_broker_sender, domo_broker_receiver) = setup_broker(3004).await;
 
-        let mut domo_broker = setup_broker(3004).await;
+        let hnd = async move {
+            domo_broker_sender
+                .write_value("Domo::Light", "uno", serde_json::json!({"connected": true}))
+                .await;
 
-        domo_broker
-            .domo_cache
-            .write_value("Domo::Light", "uno", serde_json::json!({"connected": true}))
-            .await;
-
-        let (tx_rest, mut rx_rest) = mpsc::channel(1);
-
-        let hnd = tokio::spawn(async move {
             let http_call = reqwest::get("http://localhost:3004/topic_name/Domo::Not")
                 .await
                 .unwrap();
 
-            let result: serde_json::Value =
-                serde_json::from_str(&http_call.text().await.unwrap()).unwrap();
-            let _ret = tx_rest.send(result).await;
-        });
+            let result: Result<serde_json::Value, String> = http_call.json().await.unwrap();
+            assert_eq!(result.unwrap(), serde_json::json!([]));
+        };
 
-        let mut stopped = false;
-
-        while !stopped {
-            tokio::select! {
-                _m = domo_broker.event_loop() => {
-
-                },
-                result = rx_rest.recv() => {
-
-                    let result = result.unwrap();
-
-                    assert_eq!(
-                        result,
-                        serde_json::json!([])
-                    );
-                    stopped = true;
-                }
-            }
-        }
-
-        let _ret = hnd.await;
+        (
+            domo_broker_receiver.into_stream().for_each(|_e| ready(())),
+            hnd,
+        )
+            .race()
+            .await;
     }
 
     #[tokio::test]
     async fn domo_broker_rest_get_topicuuid_not_present() {
-        use tokio::sync::mpsc;
+        let (domo_broker_sender, domo_broker_receiver) = setup_broker(3005).await;
 
-        let mut domo_broker = setup_broker(3005).await;
+        let hnd = async move {
+            domo_broker_sender
+                .write_value("Domo::Light", "uno", serde_json::json!({"connected": true}))
+                .await;
 
-        domo_broker
-            .domo_cache
-            .write_value("Domo::Light", "uno", serde_json::json!({"connected": true}))
-            .await;
-
-        let (tx_rest, mut rx_rest) = mpsc::channel(1);
-
-        let hnd = tokio::spawn(async move {
             let http_call =
                 reqwest::get("http://localhost:3005/topic_name/Domo::Light/topic_uuid/due")
                     .await
                     .unwrap();
 
-            let result: serde_json::Value =
-                serde_json::from_str(&http_call.text().await.unwrap()).unwrap();
-            let _ret = tx_rest.send(result).await;
-        });
+            let result: Result<serde_json::Value, String> = http_call.json().await.unwrap();
+            assert_eq!(result.unwrap(), serde_json::Value::Null);
+        };
 
-        let mut stopped = false;
-
-        while !stopped {
-            tokio::select! {
-                _m = domo_broker.event_loop() => {
-
-                },
-                result = rx_rest.recv() => {
-
-                    let result = result.unwrap();
-
-                    assert_eq!(
-                        result,
-                        serde_json::json!({})
-                    );
-                    stopped = true;
-                }
-            }
-        }
-
-        let _ret = hnd.await;
+        (
+            domo_broker_receiver.into_stream().for_each(|_e| ready(())),
+            hnd,
+        )
+            .race()
+            .await;
     }
 
     #[tokio::test]
     async fn domo_broker_rest_post_test() {
         use std::collections::HashMap;
-        use tokio::sync::mpsc;
 
-        let mut domo_broker = setup_broker(3006).await;
+        let (domo_broker_sender, domo_broker_receiver) = setup_broker(3006).await;
 
-        let (tx_rest, mut rx_rest) = mpsc::channel(1);
-
-        let hnd = tokio::spawn(async move {
+        let hnd = async move {
             let mut body = HashMap::new();
             body.insert("connected", true);
 
@@ -669,107 +617,93 @@ mod tests {
                 .await
                 .unwrap();
 
-            let _ret = tx_rest.send("done").await;
-        });
+            let ret = domo_broker_sender
+                .domo_cache_sender
+                .get_topic_uuid("Domo::Light", "uno")
+                .await
+                .unwrap();
 
-        let mut stopped = false;
-
-        while !stopped {
-            tokio::select! {
-                _m = domo_broker.event_loop() => {
-
-                },
-                _result = rx_rest.recv() => {
-
-                    let ret = domo_broker.domo_cache.get_topic_uuid("Domo::Light", "uno");
-
-                    match ret {
-                        Ok(m) =>  {
-                           assert_eq!(m, serde_json::json!(
-                                {
-                                    "topic_name": "Domo::Light",
-                                    "topic_uuid": "uno",
-                                    "value": {
-                                        "connected": true
-                                    }
-                                }
-                            ));
-                        },
-                        Err(_e) => assert_eq!(true, false)
+            assert_eq!(
+                ret,
+                serde_json::json!(
+                    {
+                        "topic_name": "Domo::Light",
+                        "topic_uuid": "uno",
+                        "value": {
+                            "connected": true
+                        }
                     }
+                )
+            );
+        };
 
-                    stopped = true;
-                }
-            }
-        }
-
-        let _ret = hnd.await;
+        (
+            domo_broker_receiver.into_stream().for_each(|_e| ready(())),
+            hnd,
+        )
+            .race()
+            .await;
     }
 
     #[tokio::test]
     async fn domo_broker_rest_delete_test() {
-        use tokio::sync::mpsc;
+        let (domo_broker_sender, domo_broker_receiver) = setup_broker(3007).await;
 
-        let mut domo_broker = setup_broker(3007).await;
+        let hnd = async {
+            domo_broker_sender
+                .write_value("Domo::Light", "uno", serde_json::json!({"connected": true}))
+                .await;
 
-        domo_broker
-            .domo_cache
-            .write_value("Domo::Light", "uno", serde_json::json!({"connected": true}))
-            .await;
-
-        let (tx_rest, mut rx_rest) = mpsc::channel(1);
-
-        let hnd = tokio::spawn(async move {
             let client = reqwest::Client::new();
 
-            let _http_call = client
+            let ret = domo_broker_sender
+                .domo_cache_sender
+                .get_topic_uuid("Domo::Light", "uno")
+                .await
+                .unwrap();
+
+            assert_eq!(
+                ret,
+                json!({
+                    "topic_name": "Domo::Light",
+                    "topic_uuid": "uno",
+                    "value": {
+                        "connected": true,
+                    },
+                }),
+            );
+
+            let _response = client
                 .delete("http://localhost:3007/topic_name/Domo::Light/topic_uuid/uno")
                 .send()
                 .await
                 .unwrap();
 
-            let _ret = tx_rest.send("done").await;
-        });
+            let ret = domo_broker_sender
+                .domo_cache_sender
+                .get_topic_uuid("Domo::Light", "uno")
+                .await
+                .unwrap();
 
-        let mut stopped = false;
+            assert_eq!(ret, serde_json::Value::Null);
+        };
 
-        while !stopped {
-            tokio::select! {
-                _m = domo_broker.event_loop() => {
-
-                },
-                _result = rx_rest.recv() => {
-
-                    let ret = domo_broker.domo_cache.get_topic_uuid("Domo::Light", "uno");
-
-                    match ret {
-                        Ok(m) =>  {
-                           assert_eq!(m, serde_json::json!(
-                                {}
-                            ));
-                        },
-                        Err(_e) => assert_eq!(true, false)
-                    }
-
-                    stopped = true;
-                }
-            }
-        }
-
-        let _ret = hnd.await;
+        (
+            domo_broker_receiver.into_stream().for_each(|_e| ready(())),
+            hnd,
+        )
+            .race()
+            .await;
     }
 
     #[tokio::test]
     async fn domo_broker_rest_pub_test() {
         use crate::domocache::DomoEvent;
         use std::collections::HashMap;
-        use tokio::sync::mpsc;
 
-        let mut domo_broker = setup_broker(3008).await;
+        let (_domo_broker_sender, domo_broker_receiver) = setup_broker(3008).await;
 
-        let (tx_rest, mut rx_rest) = mpsc::channel(1);
-
-        let hnd = tokio::spawn(async move {
+        let hnd = async move {
             let mut body = HashMap::new();
             body.insert("message", "hello");
 
@@ -781,27 +715,26 @@ mod tests {
                 .send()
                 .await
                 .unwrap();
+        };
 
-            let _ret = tx_rest.send("done").await;
-        });
-
-        let mut stopped = false;
-
-        while !stopped {
-            tokio::select! {
-                m = domo_broker.event_loop() => {
-
-                    if let DomoEvent::VolatileData( value ) = m {
-                        assert_eq!(value, serde_json::json!({"message": "hello"}));
-                    }
-                },
-                _result = rx_rest.recv() => {
-                    stopped = true;
-                }
-            }
-        }
-
-        let _ret = hnd.await;
+        let domo_broker_receiver = domo_broker_receiver.into_stream();
+        pin_mut!(domo_broker_receiver);
+        (
+            domo_broker_receiver
+                .filter_map(|m| {
+                    ready(match m {
+                        DomoEvent::VolatileData(value) => Some(value),
+                        _ => None,
+                    })
+                })
+                .next()
+                .map(|value| {
+                    assert_eq!(value.unwrap(), serde_json::json!({"message": "hello"}));
+                }),
+            hnd,
+        )
+            .join()
+            .await;
     }
 
     #[tokio::test]
@@ -810,56 +743,35 @@ mod tests {
 
         use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
-        use tokio::sync::mpsc;
+        let (_domo_broker_sender, domo_broker_receiver) = setup_broker(3009).await;
 
-        let (tx_rest, mut rx_rest) = mpsc::channel(1);
-
-        let mut domo_broker = setup_broker(3009).await;
-
-        tokio::spawn(async move {
+        let check_future = async move {
             let url = url::Url::parse("ws://localhost:3009/ws").unwrap();
 
             let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
 
             let (mut write, mut read) = ws_stream.split();
 
-            let _ret = write
+            write
                 .send(Message::Text("\"RequestGetAll\"".to_owned()))
-                .await;
+                .await
+                .unwrap();
 
             let msg = read.next().await.unwrap().unwrap();
 
-            if let Message::Text(text) = msg {
-                let expected = serde_json::json!(
-                    {
-                        "Response": {
-                            "value": []
-                        }
-                    }
-                );
+            let Message::Text(text) = msg else {
+                panic!("unexpected message");
+            };
 
-                let rcv_value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(text.parse::<serde_json::Value>().unwrap(), json!([]));
+        };
 
-                if rcv_value == expected {
-                    let _ret = tx_rest.send("OK").await;
-                }
-            }
-        });
-
-        let mut results_received = false;
-        while !results_received {
-            tokio::select! {
-                result = rx_rest.recv() => {
-                    results_received = true;
-
-                    let result = result.unwrap();
-                    assert_eq!(result, "OK");
-                },
-                _m = domo_broker.event_loop() => {
-
-                }
-            }
-        }
+        (
+            domo_broker_receiver.into_stream().for_each(|_e| ready(())),
+            check_future,
+        )
+            .race()
+            .await;
     }
 
     #[tokio::test]
@@ -868,83 +780,60 @@ mod tests {
 
         use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
-        use tokio::sync::mpsc;
+        let (domo_broker_sender, domo_broker_receiver) = setup_broker(3010).await;
 
-        let (tx_rest, mut rx_rest) = mpsc::channel(1);
+        let check_future = async move {
+            domo_broker_sender
+                .write_value("Domo::Light", "uno", serde_json::json!({"connected": true}))
+                .await;
 
-        let mut domo_broker = setup_broker(3010).await;
+            domo_broker_sender
+                .write_value("Domo::Light", "due", serde_json::json!({"connected": true}))
+                .await;
 
-        domo_broker
-            .domo_cache
-            .write_value("Domo::Light", "uno", serde_json::json!({"connected": true}))
-            .await;
-
-        domo_broker
-            .domo_cache
-            .write_value("Domo::Light", "due", serde_json::json!({"connected": true}))
-            .await;
-
-        tokio::spawn(async move {
             let url = url::Url::parse("ws://localhost:3010/ws").unwrap();
 
             let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
 
             let (mut write, mut read) = ws_stream.split();
 
-            let _ret = write
+            write
                 .send(Message::Text("\"RequestGetAll\"".to_owned()))
-                .await;
+                .await
+                .unwrap();
 
             let msg = read.next().await.unwrap().unwrap();
+            let Message::Text(text) = msg else {
+                panic!("unexpected message");
+            };
 
-            if let Message::Text(text) = msg {
-                let expected = serde_json::json!(
+            assert_eq!(
+                text.parse::<serde_json::Value>().unwrap(),
+                json!([
                     {
-                        "Response": {
-                            "value": [
-
-                            {
-                                "topic_name": "Domo::Light",
-                                "topic_uuid": "due",
-                                "value": {
-                                    "connected": true
-                                }
-                            },
-                            {
-                                "topic_name": "Domo::Light",
-                                "topic_uuid": "uno",
-                                "value": {
-                                    "connected": true
-                                }
-                            }
-
-                            ]
+                        "topic_name": "Domo::Light",
+                        "topic_uuid": "due",
+                        "value": {
+                            "connected": true
+                        }
+                    },
+                    {
+                        "topic_name": "Domo::Light",
+                        "topic_uuid": "uno",
+                        "value": {
+                            "connected": true
                         }
                     }
-                );
+                ])
+            );
+        };
 
-                let rcv_value: serde_json::Value = serde_json::from_str(&text).unwrap();
-
-                if rcv_value == expected {
-                    let _ret = tx_rest.send("OK").await;
-                }
-            }
-        });
-
-        let mut results_received = false;
-        while !results_received {
-            tokio::select! {
-                result = rx_rest.recv() => {
-                    results_received = true;
-
-                    let result = result.unwrap();
-                    assert_eq!(result, "OK");
-                },
-                _m = domo_broker.event_loop() => {
-
-                }
-            }
-        }
+        (
+            domo_broker_receiver.into_stream().for_each(|_e| ready(())),
+            check_future,
+        )
+            .race()
+            .await;
     }
 
     #[tokio::test]
@@ -953,27 +842,21 @@ mod tests {
 
         use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
-        use tokio::sync::mpsc;
+        let (domo_broker_sender, domo_broker_receiver) = setup_broker(3011).await;
 
-        let (tx_rest, mut rx_rest) = mpsc::channel(1);
+        let check_future = async move {
+            domo_broker_sender
+                .write_value("Domo::Light", "uno", serde_json::json!({"connected": true}))
+                .await;
 
-        let mut domo_broker = setup_broker(3011).await;
+            domo_broker_sender
+                .write_value(
+                    "Domo::Socket",
+                    "due",
+                    serde_json::json!({"connected": true}),
+                )
+                .await;
 
-        domo_broker
-            .domo_cache
-            .write_value("Domo::Light", "uno", serde_json::json!({"connected": true}))
-            .await;
-
-        domo_broker
-            .domo_cache
-            .write_value(
-                "Domo::Socket",
-                "due",
-                serde_json::json!({"connected": true}),
-            )
-            .await;
-
-        tokio::spawn(async move {
             let url = url::Url::parse("ws://localhost:3011/ws").unwrap();
 
             let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
@@ -985,50 +868,34 @@ mod tests {
             })
             .unwrap();
 
-            let _ret = write.send(Message::Text(req)).await;
+            write.send(Message::Text(req)).await.unwrap();
 
             let msg = read.next().await.unwrap().unwrap();
+            let Message::Text(text) = msg else {
+                panic!("unexpected message");
+            };
+            let msg: Result<serde_json::Value, String> = serde_json::from_str(&text).unwrap();
 
-            if let Message::Text(text) = msg {
-                let expected = serde_json::json!(
+            assert_eq!(
+                msg.unwrap(),
+                json!([
                     {
-                        "Response": {
-                            "value": [
-                            {
-                                "topic_name": "Domo::Light",
-                                "topic_uuid": "uno",
-                                "value": {
-                                    "connected": true
-                                }
-                            }
-
-                            ]
+                        "topic_name": "Domo::Light",
+                        "topic_uuid": "uno",
+                        "value": {
+                            "connected": true
                         }
                     }
-                );
+                ])
+            );
+        };
 
-                let rcv_value: serde_json::Value = serde_json::from_str(&text).unwrap();
-
-                if rcv_value == expected {
-                    let _ret = tx_rest.send("OK").await;
-                }
-            }
-        });
-
-        let mut results_received = false;
-        while !results_received {
-            tokio::select! {
-                result = rx_rest.recv() => {
-                    results_received = true;
-
-                    let result = result.unwrap();
-                    assert_eq!(result, "OK");
-                },
-                _m = domo_broker.event_loop() => {
-
-                }
-            }
-        }
+        (
+            domo_broker_receiver.into_stream().for_each(|_e| ready(())),
+            check_future,
+        )
+            .race()
+            .await;
     }
 
     #[tokio::test]
@@ -1037,27 +904,21 @@ mod tests {
 
         use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
-        use tokio::sync::mpsc;
+        let (domo_broker_sender, domo_broker_receiver) = setup_broker(3012).await;
 
-        let (tx_rest, mut rx_rest) = mpsc::channel(1);
+        let check_future = async move {
+            domo_broker_sender
+                .write_value("Domo::Light", "uno", serde_json::json!({"connected": true}))
+                .await;
 
-        let mut domo_broker = setup_broker(3012).await;
+            domo_broker_sender
+                .write_value(
+                    "Domo::Socket",
+                    "due",
+                    serde_json::json!({"connected": true}),
+                )
+                .await;
 
-        domo_broker
-            .domo_cache
-            .write_value("Domo::Light", "uno", serde_json::json!({"connected": true}))
-            .await;
-
-        domo_broker
-            .domo_cache
-            .write_value(
-                "Domo::Socket",
-                "due",
-                serde_json::json!({"connected": true}),
-            )
-            .await;
-
-        tokio::spawn(async move {
             let url = url::Url::parse("ws://localhost:3012/ws").unwrap();
 
             let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
@@ -1070,49 +931,34 @@ mod tests {
             })
             .unwrap();
 
-            let _ret = write.send(Message::Text(req)).await;
+            write.send(Message::Text(req)).await.unwrap();
 
             let msg = read.next().await.unwrap().unwrap();
+            let Message::Text(text) = msg else {
+                panic!("unexpected message");
+            };
+            let msg: Result<serde_json::Value, String> = serde_json::from_str(&text).unwrap();
 
-            if let Message::Text(text) = msg {
-                let expected = serde_json::json!(
+            assert_eq!(
+                msg.unwrap(),
+                json!(
                     {
-                        "Response": {
-                            "value":
-                            {
-                                "topic_name": "Domo::Light",
-                                "topic_uuid": "uno",
-                                "value": {
-                                    "connected": true
-                                }
-                            }
-
+                        "topic_name": "Domo::Light",
+                        "topic_uuid": "uno",
+                        "value": {
+                            "connected": true
                         }
                     }
-                );
+                )
+            );
+        };
 
-                let rcv_value: serde_json::Value = serde_json::from_str(&text).unwrap();
-
-                if rcv_value == expected {
-                    let _ret = tx_rest.send("OK").await;
-                }
-            }
-        });
-
-        let mut results_received = false;
-        while !results_received {
-            tokio::select! {
-                result = rx_rest.recv() => {
-                    results_received = true;
-
-                    let result = result.unwrap();
-                    assert_eq!(result, "OK");
-                },
-                _m = domo_broker.event_loop() => {
-
-                }
-            }
-        }
+        (
+            domo_broker_receiver.into_stream().for_each(|_e| ready(())),
+            check_future,
+        )
+            .race()
+            .await;
     }
 
     #[tokio::test]
@@ -1121,13 +967,9 @@ mod tests {
 
         use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
-        use tokio::sync::mpsc;
+        let (_domo_broker_sender, domo_broker_receiver) = setup_broker(3013).await;
 
-        let (tx_rest, mut rx_rest) = mpsc::channel(1);
-
-        let mut domo_broker = setup_broker(3013).await;
-
-        tokio::spawn(async move {
+        let check_future = async move {
             let url = url::Url::parse("ws://localhost:3013/ws").unwrap();
 
             let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
@@ -1141,39 +983,32 @@ mod tests {
             })
             .unwrap();
 
-            let _ret = write.send(Message::Text(req)).await;
+            write.send(Message::Text(req)).await.unwrap();
 
             let msg = read.next().await.unwrap().unwrap();
 
-            if let Message::Text(text) = msg {
-                let expected = serde_json::to_string(&AsyncWebSocketDomoMessage::Persistent {
+            let Message::Text(text) = msg else {
+                panic!("unexpected message");
+            };
+            let msg: Option<PostTopicUuidResponse> = serde_json::from_str(&text).unwrap();
+
+            assert_eq!(
+                msg.unwrap(),
+                PostTopicUuidResponse::Persistent {
                     topic_name: "Domo::Light".to_owned(),
                     topic_uuid: "uno".to_owned(),
                     value: serde_json::json!({"connected": true}),
                     deleted: false,
-                })
-                .unwrap();
-
-                if text == expected {
-                    let _ret = tx_rest.send("OK").await;
                 }
-            }
-        });
+            );
+        };
 
-        let mut results_received = false;
-        while !results_received {
-            tokio::select! {
-                result = rx_rest.recv() => {
-                    results_received = true;
-
-                    let result = result.unwrap();
-                    assert_eq!(result, "OK");
-                },
-                _m = domo_broker.event_loop() => {
-
-                }
-            }
-        }
+        (
+            domo_broker_receiver.into_stream().for_each(|_e| ready(())),
+            check_future,
+        )
+            .race()
+            .await;
     }
 
     #[tokio::test]
@@ -1182,18 +1017,13 @@ mod tests {
 
         use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
-        use tokio::sync::mpsc;
+        let (domo_broker_sender, domo_broker_receiver) = setup_broker(3014).await;
 
-        let (tx_rest, mut rx_rest) = mpsc::channel(1);
+        let check_future = async move {
+            domo_broker_sender
+                .write_value("Domo::Light", "uno", serde_json::json!({"connected": true}))
+                .await;
 
-        let mut domo_broker = setup_broker(3014).await;
-
-        domo_broker
-            .domo_cache
-            .write_value("Domo::Light", "uno", serde_json::json!({"connected": true}))
-            .await;
-
-        tokio::spawn(async move {
             let url = url::Url::parse("ws://localhost:3014/ws").unwrap();
 
             let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
@@ -1206,39 +1036,31 @@ mod tests {
             })
             .unwrap();
 
-            let _ret = write.send(Message::Text(req)).await;
+            write.send(Message::Text(req)).await.unwrap();
 
             let msg = read.next().await.unwrap().unwrap();
 
-            if let Message::Text(text) = msg {
-                let expected = serde_json::to_string(&AsyncWebSocketDomoMessage::Persistent {
-                    topic_name: "Domo::Light".to_owned(),
-                    topic_uuid: "uno".to_owned(),
-                    value: serde_json::Value::Null,
-                    deleted: true,
+            let Message::Text(text) = msg else {
+                panic!("unexpected message");
+            };
+
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&text).unwrap(),
+                json!({
+                    "topic_name": "Domo::Light",
+                    "topic_uuid": "uno",
+                    "value": null,
+                    "deleted": true,
                 })
-                .unwrap();
+            );
+        };
 
-                if text == expected {
-                    let _ret = tx_rest.send("OK").await;
-                }
-            }
-        });
-
-        let mut results_received = false;
-        while !results_received {
-            tokio::select! {
-                result = rx_rest.recv() => {
-                    results_received = true;
-
-                    let result = result.unwrap();
-                    assert_eq!(result, "OK");
-                },
-                _m = domo_broker.event_loop() => {
-
-                }
-            }
-        }
+        (
+            domo_broker_receiver.into_stream().for_each(|_e| ready(())),
+            check_future,
+        )
+            .race()
+            .await;
     }
 
     #[tokio::test]
@@ -1247,13 +1069,9 @@ mod tests {
 
         use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
-        use tokio::sync::mpsc;
+        let (_domo_broker_sender, domo_broker_receiver) = setup_broker(3015).await;
 
-        let (tx_rest, mut rx_rest) = mpsc::channel(1);
-
-        let mut domo_broker = setup_broker(3015).await;
-
-        tokio::spawn(async move {
+        let check_future = async move {
             let url = url::Url::parse("ws://localhost:3015/ws").unwrap();
 
             let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
@@ -1265,35 +1083,27 @@ mod tests {
             })
             .unwrap();
 
-            let _ret = write.send(Message::Text(req)).await;
+            write.send(Message::Text(req)).await.unwrap();
 
             let msg = read.next().await.unwrap().unwrap();
 
-            if let Message::Text(text) = msg {
-                let expected = serde_json::to_string(&AsyncWebSocketDomoMessage::Volatile {
+            let Message::Text(text) = msg else {
+                panic!("unexpected message");
+            };
+
+            assert_eq!(
+                serde_json::from_str::<AsyncWebSocketDomoMessage>(&text).unwrap(),
+                AsyncWebSocketDomoMessage::Volatile {
                     value: serde_json::json!({"message": "hello"}),
-                })
-                .unwrap();
-
-                if text == expected {
-                    let _ret = tx_rest.send("OK").await;
                 }
-            }
-        });
+            );
+        };
 
-        let mut results_received = false;
-        while !results_received {
-            tokio::select! {
-                result = rx_rest.recv() => {
-                    results_received = true;
-
-                    let result = result.unwrap();
-                    assert_eq!(result, "OK");
-                },
-                _m = domo_broker.event_loop() => {
-
-                }
-            }
-        }
+        (
+            domo_broker_receiver.into_stream().for_each(|_e| ready(())),
+            check_future,
+        )
+            .race()
+            .await;
     }
 }
