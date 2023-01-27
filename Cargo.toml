@@ -13,6 +13,7 @@ axum = { version = "0.5.6", features = ["ws"] }
 clap = { version = "3.1.18", features = ["derive"] }
 env_logger = "0.9.0"
 futures = "0.3.21"
+futures-concurrency = "7.0.0"
 futures-util = "0.3.21"
 jsonpath_lib = "0.3.0"
 libp2p = { version = "0.50.0", features = ["tokio", "mdns", "gossipsub", "noise", "yamux", "pnet", "rsa", "tcp", "macros"] }
@@ -26,9 +27,11 @@ serde = "1.0.137"
 serde_json = "1.0"
 time = "0.3.17"
 tokio = { version = "1.19.0", features = ["full"] }
+tokio-stream = { version = "0.1.11", features = ["sync", "io-util"] }
 tokio-tungstenite = "0.17.1"
 tower-http = { version = "0.3.0", features = ["cors"] }
 url = "2.2.2"
+void = "1"
 
 [target.'cfg(unix)'.dependencies]
 nix = "0.24.1"
