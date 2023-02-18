@@ -5,8 +5,10 @@ use std::error::Error;
 
 use tokio::io::{self, AsyncBufReadExt};
 
+mod domobroker;
+
 use clap::Parser;
-use sifis_dht::domobroker::{DomoBroker, DomoBrokerConf};
+use domobroker::{DomoBroker, DomoBrokerConf};
 use sifis_dht::domocache::DomoEvent;
 
 #[derive(Parser, Debug)]

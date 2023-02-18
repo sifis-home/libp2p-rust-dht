@@ -1,17 +1,20 @@
+mod restmessage;
+mod webapimanager;
+mod websocketmessage;
+
 use std::error::Error;
 use std::io::ErrorKind;
 
-use crate::domocache::{DomoCache, DomoEvent};
-use crate::domopersistentstorage::SqliteStorage;
-use crate::restmessage;
-use crate::webapimanager::WebApiManager;
-use crate::websocketmessage::{
-    AsyncWebSocketDomoMessage, SyncWebSocketDomoMessage, SyncWebSocketDomoRequest,
-};
 use libp2p::identity;
 use rsa::pkcs8::EncodePrivateKey;
 use rsa::RsaPrivateKey;
 use serde_json::json;
+use sifis_dht::domocache::{DomoCache, DomoEvent};
+use sifis_dht::domopersistentstorage::SqliteStorage;
+use webapimanager::WebApiManager;
+use websocketmessage::{
+    AsyncWebSocketDomoMessage, SyncWebSocketDomoMessage, SyncWebSocketDomoRequest,
+};
 
 pub struct DomoBroker {
     pub domo_cache: DomoCache<SqliteStorage>,
@@ -312,11 +315,11 @@ fn generate_rsa_key() -> (Vec<u8>, Vec<u8>) {
 
 #[cfg(test)]
 mod tests {
-    use crate::domobroker::DomoBroker;
-    use crate::websocketmessage::{AsyncWebSocketDomoMessage, SyncWebSocketDomoRequest};
+    use super::websocketmessage::{AsyncWebSocketDomoMessage, SyncWebSocketDomoRequest};
+    use super::DomoBroker;
 
     async fn setup_broker(http_port: u16) -> DomoBroker {
-        let sqlite_file = crate::domopersistentstorage::SQLITE_MEMORY_STORAGE.to_owned();
+        let sqlite_file = sifis_dht::domopersistentstorage::SQLITE_MEMORY_STORAGE.to_owned();
         let domo_broker_conf = super::DomoBrokerConf {
             sqlite_file,
             is_persistent_cache: true,
@@ -761,7 +764,7 @@ mod tests {
 
     #[tokio::test]
     async fn domo_broker_rest_pub_test() {
-        use crate::domocache::DomoEvent;
+        use sifis_dht::domocache::DomoEvent;
         use std::collections::HashMap;
         use tokio::sync::mpsc;
 

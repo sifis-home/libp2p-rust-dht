@@ -19,10 +19,12 @@ use tokio::sync::mpsc::Sender;
 
 use serde_json::json;
 
-use crate::websocketmessage::{
+use crate::domobroker::restmessage;
+use crate::domobroker::websocketmessage::{
     AsyncWebSocketDomoMessage, SyncWebSocketDomoMessage, SyncWebSocketDomoRequest,
 };
-use crate::{restmessage, utils};
+
+use sifis_dht::utils;
 
 use std::net::TcpListener;
 
@@ -351,7 +353,7 @@ mod tests {
         let mut is_get_all = false;
 
         let message = ret.expect("success");
-        if let crate::restmessage::RestMessage::GetAll { responder } = message {
+        if let crate::domobroker::restmessage::RestMessage::GetAll { responder } = message {
             is_get_all = true;
             let _r = responder.send(Ok(serde_json::json!({})));
         }
@@ -387,7 +389,7 @@ mod tests {
 
         assert!(matches!(
             message.request,
-            crate::websocketmessage::SyncWebSocketDomoRequest::RequestGetAll
+            crate::domobroker::websocketmessage::SyncWebSocketDomoRequest::RequestGetAll
         ));
 
         let _ret = task.await;
