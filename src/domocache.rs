@@ -21,7 +21,6 @@ use std::fmt::{Display, Formatter};
 use std::future::{ready, Ready};
 use std::hash::{Hash, Hasher};
 use std::ops::{ControlFlow, Not};
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 use time::OffsetDateTime;
@@ -80,7 +79,7 @@ impl Display for DomoCacheElement {
 
 #[derive(Debug, Clone)]
 pub struct DomoCacheSender {
-    local_peer_id: Rc<str>,
+    local_peer_id: Arc<str>,
     client_tx_channel: UnboundedSender<DomoEvent>,
     pub(crate) sender: mpsc::Sender<Message>,
 }
@@ -94,7 +93,7 @@ pub struct DomoCacheReceiver<T> {
     swarm_receiver: SwarmReceiver,
     cache: CacheTree,
     storage: T,
-    local_peer_id: Rc<str>,
+    local_peer_id: Arc<str>,
     client_rx_channel: UnboundedReceiver<DomoEvent>,
     client_tx_channel: UnboundedSender<DomoEvent>,
     send_cache_state_timer: tokio::time::Instant,
@@ -109,7 +108,7 @@ struct MessageHandler<T> {
     is_persistent_cache: bool,
     client_tx_channel: UnboundedSender<DomoEvent>,
     peers_caches_state: BTreeMap<String, DomoCacheStateMessage>,
-    local_peer_id: Rc<str>,
+    local_peer_id: Arc<str>,
     publish_cache_counter: u8,
     last_cache_repub_timestamp: u128,
     swarm_sender: SwarmSender,
@@ -121,7 +120,7 @@ struct MessageHandlerRef<'a, T> {
     _is_persistent_cache: &'a bool,
     _client_tx_channel: &'a UnboundedSender<DomoEvent>,
     peers_caches_state: &'a BTreeMap<String, DomoCacheStateMessage>,
-    local_peer_id: &'a Rc<str>,
+    local_peer_id: &'a Arc<str>,
     _publish_cache_counter: &'a u8,
     _last_cache_repub_timestamp: &'a u128,
     _swarm_sender: &'a SwarmSender,
@@ -133,7 +132,7 @@ struct MessageHandlerMut<'a, T> {
     is_persistent_cache: &'a mut bool,
     client_tx_channel: &'a UnboundedSender<DomoEvent>,
     peers_caches_state: &'a mut BTreeMap<String, DomoCacheStateMessage>,
-    local_peer_id: &'a Rc<str>,
+    local_peer_id: &'a Arc<str>,
     publish_cache_counter: &'a mut u8,
     last_cache_repub_timestamp: &'a mut u128,
     swarm_sender: &'a SwarmSender,
@@ -590,7 +589,7 @@ pub async fn channel<T: DomoPersistentStorage>(
     let swarm = crate::domolibp2p::start(shared_key, local_key_pair, loopback_only)
         .await
         .unwrap();
-    let peer_id = Rc::from(swarm.local_peer_id().to_string());
+    let peer_id = Arc::from(swarm.local_peer_id().to_string());
 
     // FIXME: allow customization of this buffer
     let (swarm_sender, swarm_receiver) = swarm::channel(swarm, 32);
@@ -603,7 +602,7 @@ pub async fn channel<T: DomoPersistentStorage>(
     let (sender, receiver) = mpsc::channel(channel_size.unwrap_or(32));
 
     let c = DomoCacheSender {
-        local_peer_id: Rc::clone(&peer_id),
+        local_peer_id: Arc::clone(&peer_id),
         client_tx_channel: client_tx_channel.clone(),
         sender,
     };
