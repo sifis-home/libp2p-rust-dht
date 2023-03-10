@@ -23,7 +23,6 @@ use std::hash::{Hash, Hasher};
 use std::ops::{ControlFlow, Not};
 use std::sync::Arc;
 use std::time::Duration;
-use time::OffsetDateTime;
 use tokio::sync::mpsc::{Sender, UnboundedReceiver, UnboundedSender};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_stream::wrappers::{IntervalStream, ReceiverStream, UnboundedReceiverStream};
@@ -1051,9 +1050,14 @@ impl<T: DomoPersistentStorage> DomoCacheReceiver<T> {
                 .map(|()| Received::Timeout);
 
         let (swarm_managed_event_sender, swarm_managed_event_receiver) = mpsc::channel(8);
-        let swarm_stream = swarm_receiver
-            .into_stream()
-            .then(move |event| handle_swarm_event(event, swarm_managed_event_sender.clone()));
+        let swarm_sender = message_handler.swarm_sender.clone();
+        let swarm_stream = swarm_receiver.into_stream().then(move |event| {
+            handle_swarm_event(
+                event,
+                swarm_managed_event_sender.clone(),
+                swarm_sender.clone(),
+            )
+        });
 
         let internal_swarm_stream =
             ReceiverStream::new(swarm_managed_event_receiver).map(Received::SwarmMessage);
@@ -1760,7 +1764,11 @@ enum InternalSwarmMessage {
     VolatileData(Vec<u8>),
 }
 
-async fn handle_swarm_event(event: DomoSwarmEvent, sender: mpsc::Sender<InternalSwarmMessage>) {
+async fn handle_swarm_event(
+    event: DomoSwarmEvent,
+    sender: mpsc::Sender<InternalSwarmMessage>,
+    swarm_sender: SwarmSender,
+) {
     match event {
         SwarmEvent::ExpiredListenAddr { address, .. } => {
             log::info!("Address {address:?} expired");
@@ -1815,11 +1823,8 @@ async fn handle_swarm_event(event: DomoSwarmEvent, sender: mpsc::Sender<Internal
         SwarmEvent::Behaviour(crate::domolibp2p::OutEvent::Mdns(libp2p::mdns::Event::Expired(
             list,
         ))) => {
-            let local = OffsetDateTime::now_utc();
-
-            for (peer, _) in list {
-                log::info!("MDNS for peer {peer} expired {local:?}");
-            }
+            let peers = list.into_iter().map(|(peer, _)| peer).collect();
+            swarm_sender.publish_gossipsub_peers(peers).await.unwrap()
         }
         _ => {}
     }
