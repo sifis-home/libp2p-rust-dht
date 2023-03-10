@@ -3,7 +3,7 @@ use std::{future::ready, result};
 
 use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge;
-use libp2p::{gossipsub, swarm::SwarmEvent};
+use libp2p::{gossipsub, swarm::SwarmEvent, PeerId};
 use time::OffsetDateTime;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
@@ -34,9 +34,10 @@ pub enum SwarmOperation {
         data: Vec<u8>,
         sender: oneshot::Sender<Result<gossipsub::MessageId, gossipsub::error::PublishError>>,
     },
+    PublishGossipsubPeers(Vec<PeerId>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SwarmSender(pub mpsc::Sender<SwarmOperation>);
 
 #[derive(Debug)]
@@ -120,6 +121,16 @@ impl SwarmSender {
         self.0.send(message).await?;
         receiver.await?
     }
+
+    pub async fn publish_gossipsub_peers(
+        &self,
+        peers: Vec<PeerId>,
+    ) -> Result<(), gossipsub::error::PublishError> {
+        self.0
+            .send(SwarmOperation::PublishGossipsubPeers(peers))
+            .await?;
+        Ok(())
+    }
 }
 
 impl SwarmReceiver {
@@ -176,6 +187,17 @@ impl SwarmReceiver {
                         let result = gossipsub.0.try_lock().unwrap().publish(topic, data);
                         // TODO: should this error bubble up?
                         sender.send(result.map_err(SendError::Swarm)).unwrap();
+                        None
+                    }
+
+                    Message::Op(SwarmOperation::PublishGossipsubPeers(peers)) => {
+                        let date = OffsetDateTime::now_utc();
+
+                        let mut gossipsub = gossipsub.0.try_lock().unwrap();
+                        for peer in peers {
+                            gossipsub.add_explicit_peer(&peer);
+                            log::info!("Discovered peer {peer} {date:?}");
+                        }
                         None
                     }
                 };
