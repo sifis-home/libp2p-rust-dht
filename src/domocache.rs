@@ -185,6 +185,40 @@ pub enum Message {
     OnlyInternal(OnlyInternalMessage),
 }
 
+trait RestValue {
+    fn to_rest(self) -> Value;
+}
+
+impl RestValue for Value {
+    fn to_rest(self) -> Value {
+        self
+    }
+}
+
+impl RestValue for Result<Value, String> {
+    fn to_rest(self) -> Value {
+        match self {
+            Ok(v) => v,
+            Err(_) => serde_json::json!([]),
+        }
+    }
+}
+
+impl RestValue for () {
+    fn to_rest(self) -> Value {
+        serde_json::json!({})
+    }
+}
+
+impl<T> RestValue for Option<T>
+where
+    T: Serialize,
+{
+    fn to_rest(self) -> Value {
+        serde_json::to_value(self).unwrap()
+    }
+}
+
 #[derive(Debug)]
 pub struct OnlyInternalMessage(OnlyInternalMessageInner);
 
@@ -1195,12 +1229,9 @@ impl<T: DomoPersistentStorage> MessageHandlerMut<'_, T> {
         #[inline]
         fn handle_rest<T>(sender: RestResponder, value: T, message_ty: &str)
         where
-            T: Serialize,
+            T: Serialize + RestValue,
         {
-            if sender
-                .send(Ok(serde_json::to_value(value).unwrap()))
-                .is_err()
-            {
+            if sender.send(Ok(value.to_rest())).is_err() {
                 log::warn!(
                     "rest channel to return result of message {} is unexpectedly closed",
                     message_ty,
@@ -1218,15 +1249,13 @@ impl<T: DomoPersistentStorage> MessageHandlerMut<'_, T> {
                 MessageResponseSender::Internal(sender) => {
                     handle_internal(sender, value, message_ty)
                 }
-                MessageResponseSender::Rest(responder) => {
-                    handle_rest(responder, Ok::<_, String>(()), message_ty)
-                }
+                MessageResponseSender::Rest(responder) => handle_rest(responder, (), message_ty),
                 MessageResponseSender::Websocket { .. } => {}
             }
         }
 
         #[inline]
-        fn handle_return_with_response<T: Serialize>(
+        fn handle_return_with_response<T: Serialize + RestValue>(
             sender: MessageResponseSender<T>,
             value: T,
             message_ty: &str,
@@ -1240,6 +1269,7 @@ impl<T: DomoPersistentStorage> MessageHandlerMut<'_, T> {
                     req_id,
                     sender,
                 } => {
+                    let value = value.to_rest();
                     if sender
                         .send(SyncWebSocketDomoResponseMessage {
                             ws_client_id,

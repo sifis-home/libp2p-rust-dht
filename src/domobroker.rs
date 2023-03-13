@@ -479,9 +479,9 @@ mod tests {
                 .await
                 .unwrap();
 
-            let result: Result<serde_json::Value, String> = http_call.json().await.unwrap();
+            let result: serde_json::Value = http_call.json().await.unwrap();
             assert_eq!(
-                result.unwrap(),
+                result,
                 serde_json::json!([
                     {
                         "topic_name": "Domo::Light",
@@ -524,9 +524,9 @@ mod tests {
                     .await
                     .unwrap();
 
-            let result: Result<serde_json::Value, String> = http_call.json().await.unwrap();
+            let result: serde_json::Value = http_call.json().await.unwrap();
             assert_eq!(
-                result.unwrap(),
+                result,
                 serde_json::json!(
                     {
                         "topic_name": "Domo::Light",
@@ -560,8 +560,8 @@ mod tests {
                 .await
                 .unwrap();
 
-            let result: Result<serde_json::Value, String> = http_call.json().await.unwrap();
-            assert_eq!(result.unwrap(), serde_json::json!([]));
+            let result: serde_json::Value = http_call.json().await.unwrap();
+            assert_eq!(result, serde_json::json!([]));
         };
 
         (
@@ -586,8 +586,8 @@ mod tests {
                     .await
                     .unwrap();
 
-            let result: Result<serde_json::Value, String> = http_call.json().await.unwrap();
-            assert_eq!(result.unwrap(), serde_json::Value::Null);
+            let result: serde_json::Value = http_call.json().await.unwrap();
+            assert_eq!(result, serde_json::Value::Null);
         };
 
         (
@@ -874,10 +874,10 @@ mod tests {
             let Message::Text(text) = msg else {
                 panic!("unexpected message");
             };
-            let msg: Result<serde_json::Value, String> = serde_json::from_str(&text).unwrap();
+            let msg: serde_json::Value = serde_json::from_str(&text).unwrap();
 
             assert_eq!(
-                msg.unwrap(),
+                msg,
                 json!([
                     {
                         "topic_name": "Domo::Light",
@@ -937,10 +937,10 @@ mod tests {
             let Message::Text(text) = msg else {
                 panic!("unexpected message");
             };
-            let msg: Result<serde_json::Value, String> = serde_json::from_str(&text).unwrap();
+            let msg: serde_json::Value = serde_json::from_str(&text).unwrap();
 
             assert_eq!(
-                msg.unwrap(),
+                msg,
                 json!(
                     {
                         "topic_name": "Domo::Light",
