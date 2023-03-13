@@ -4,6 +4,7 @@ use libp2p::gossipsub::{
     Gossipsub, GossipsubEvent, GossipsubMessage, IdentTopic as Topic, MessageAuthenticity,
     ValidationMode,
 };
+use libp2p::swarm::derive_prelude::{ConnectionId, FromSwarm, ListenerId};
 use libp2p::swarm::SwarmBuilder;
 use libp2p::{gossipsub, tcp};
 
@@ -182,26 +183,31 @@ pub struct SharedGossipsub(
     pub(crate) Arc<std::sync::Mutex<Gossipsub>>,
 );
 
+impl SharedGossipsub {
+    #[inline]
+    fn get_mut(&self) -> std::sync::MutexGuard<'_, Gossipsub> {
+        self.0.try_lock().unwrap()
+    }
+}
+
 impl NetworkBehaviour for SharedGossipsub {
     type ConnectionHandler = <Gossipsub as NetworkBehaviour>::ConnectionHandler;
     type OutEvent = <Gossipsub as NetworkBehaviour>::OutEvent;
 
     #[inline]
     fn new_handler(&mut self) -> Self::ConnectionHandler {
-        self.0.try_lock().unwrap().new_handler()
+        self.get_mut().new_handler()
     }
 
     #[inline]
     fn on_connection_handler_event(
         &mut self,
         peer_id: PeerId,
-        connection_id: libp2p::swarm::derive_prelude::ConnectionId,
+        connection_id: ConnectionId,
         event: <<Self::ConnectionHandler as libp2p::swarm::IntoConnectionHandler>::Handler as
             libp2p::swarm::ConnectionHandler>::OutEvent,
     ) {
-        self.0
-            .try_lock()
-            .unwrap()
+        self.get_mut()
             .on_connection_handler_event(peer_id, connection_id, event)
     }
 
@@ -213,7 +219,144 @@ impl NetworkBehaviour for SharedGossipsub {
     ) -> std::task::Poll<
         libp2p::swarm::NetworkBehaviourAction<Self::OutEvent, Self::ConnectionHandler>,
     > {
-        self.0.try_lock().unwrap().poll(cx, params)
+        self.get_mut().poll(cx, params)
+    }
+
+    #[inline]
+    fn addresses_of_peer(&mut self, peer_id: &PeerId) -> Vec<libp2p::Multiaddr> {
+        self.get_mut().addresses_of_peer(peer_id)
+    }
+
+    #[inline]
+    fn on_swarm_event(&mut self, event: FromSwarm<Self::ConnectionHandler>) {
+        self.get_mut().on_swarm_event(event)
+    }
+
+    #[inline]
+    fn inject_connection_established(
+        &mut self,
+        peer_id: &PeerId,
+        connection_id: &ConnectionId,
+        endpoint: &libp2p::core::ConnectedPoint,
+        failed_addresses: Option<&Vec<libp2p::Multiaddr>>,
+        other_established: usize,
+    ) {
+        #[allow(deprecated)]
+        self.get_mut().inject_connection_established(
+            peer_id,
+            connection_id,
+            endpoint,
+            failed_addresses,
+            other_established,
+        )
+    }
+
+    #[inline]
+    fn inject_connection_closed(
+        &mut self,
+        peer_id: &PeerId,
+        connection_id: &ConnectionId,
+        endpoint: &libp2p::core::ConnectedPoint,
+        handler: <Self::ConnectionHandler as libp2p::swarm::IntoConnectionHandler>::Handler,
+        remaining_established: usize,
+    ) {
+        #[allow(deprecated)]
+        self.get_mut().inject_connection_closed(
+            peer_id,
+            connection_id,
+            endpoint,
+            handler,
+            remaining_established,
+        )
+    }
+
+    #[inline]
+    fn inject_address_change(
+        &mut self,
+        peer_id: &PeerId,
+        connection_id: &ConnectionId,
+        old: &libp2p::core::ConnectedPoint,
+        new: &libp2p::core::ConnectedPoint,
+    ) {
+        #[allow(deprecated)]
+        self.get_mut()
+            .inject_address_change(peer_id, connection_id, old, new)
+    }
+
+    #[inline]
+    fn inject_event(
+        &mut self,
+        peer_id: PeerId,
+        connection: ConnectionId,
+        event: <<Self::ConnectionHandler as libp2p::swarm::IntoConnectionHandler>::Handler as libp2p::swarm::ConnectionHandler>::OutEvent,
+    ) {
+        #[allow(deprecated)]
+        self.get_mut().inject_event(peer_id, connection, event)
+    }
+
+    #[inline]
+    fn inject_dial_failure(
+        &mut self,
+        peer_id: Option<PeerId>,
+        handler: Self::ConnectionHandler,
+        error: &libp2p::swarm::DialError,
+    ) {
+        #[allow(deprecated)]
+        self.get_mut().inject_dial_failure(peer_id, handler, error)
+    }
+
+    #[inline]
+    fn inject_listen_failure(
+        &mut self,
+        local_addr: &libp2p::Multiaddr,
+        send_back_addr: &libp2p::Multiaddr,
+        handler: Self::ConnectionHandler,
+    ) {
+        #[allow(deprecated)]
+        self.get_mut()
+            .inject_listen_failure(local_addr, send_back_addr, handler)
+    }
+
+    #[inline]
+    fn inject_new_listener(&mut self, id: ListenerId) {
+        #[allow(deprecated)]
+        self.get_mut().inject_new_listener(id)
+    }
+
+    #[inline]
+    fn inject_new_listen_addr(&mut self, id: ListenerId, addr: &libp2p::Multiaddr) {
+        #[allow(deprecated)]
+        self.get_mut().inject_new_listen_addr(id, addr)
+    }
+
+    #[inline]
+    fn inject_expired_listen_addr(&mut self, id: ListenerId, addr: &libp2p::Multiaddr) {
+        #[allow(deprecated)]
+        self.get_mut().inject_expired_listen_addr(id, addr)
+    }
+
+    #[inline]
+    fn inject_listener_error(&mut self, id: ListenerId, err: &(dyn std::error::Error + 'static)) {
+        #[allow(deprecated)]
+        self.get_mut().inject_listener_error(id, err)
+    }
+
+    #[inline]
+    fn inject_listener_closed(&mut self, id: ListenerId, reason: Result<(), &std::io::Error>) {
+        #[allow(deprecated)]
+        self.get_mut().inject_listener_closed(id, reason)
+    }
+
+    #[inline]
+    fn inject_new_external_addr(&mut self, addr: &libp2p::Multiaddr) {
+        #[allow(deprecated)]
+        self.get_mut().inject_new_external_addr(addr)
+    }
+
+    #[inline]
+    fn inject_expired_external_addr(&mut self, addr: &libp2p::Multiaddr) {
+        #[allow(deprecated)]
+        self.get_mut().inject_expired_external_addr(addr)
     }
 }
 
