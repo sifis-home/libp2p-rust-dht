@@ -34,7 +34,7 @@ use self::swarm::{SwarmReceiver, SwarmSender};
 #[derive(Debug, Clone)]
 pub enum DomoEvent {
     None,
-    VolatileData(serde_json::Value),
+    VolatileData(Value),
     PersistentData(DomoCacheElement),
 }
 
@@ -155,17 +155,17 @@ pub enum Message {
     FilterWithTopicName {
         topic_name: String,
         jsonpath_expr: String,
-        sender: MessageResponseSender<Result<serde_json::Value, String>>,
+        sender: MessageResponseSender<Result<Value, String>>,
     },
     GetTopicName {
         topic_name: String,
-        sender: MessageResponseSender<Result<serde_json::Value, String>>,
+        sender: MessageResponseSender<Result<Value, String>>,
     },
-    GetAll(MessageResponseSender<serde_json::Value>),
+    GetAll(MessageResponseSender<Value>),
     GetTopicUuid {
         topic_name: String,
         topic_uuid: String,
-        sender: MessageResponseSender<Result<serde_json::Value, String>>,
+        sender: MessageResponseSender<Result<Value, String>>,
     },
     PostTopicUuid {
         topic_name: String,
@@ -429,7 +429,7 @@ where
         topic_name: String,
         jsonpath_expr: String,
         message_sender: &Sender<Message>,
-    ) -> T::Output<Result<serde_json::Value, String>> {
+    ) -> T::Output<Result<Value, String>> {
         let (sender, receiver) = self.0.build();
         message_sender
             .send(Message::FilterWithTopicName {
@@ -485,7 +485,7 @@ where
         topic_name: String,
         topic_uuid: String,
         message_sender: &Sender<Message>,
-    ) -> T::Output<Result<serde_json::Value, String>> {
+    ) -> T::Output<Result<Value, String>> {
         let (sender, receiver) = self.0.build();
         message_sender
             .send(Message::GetTopicUuid {
@@ -637,7 +637,7 @@ impl DomoCacheSender {
         &self,
         topic_name: impl Into<String>,
         jsonpath_expr: impl Into<String>,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<Value, String> {
         let topic_name = topic_name.into();
         let jsonpath_expr = jsonpath_expr.into();
 
@@ -703,7 +703,7 @@ impl DomoCacheSender {
             topic_name: String::from(topic_name),
             topic_uuid: String::from(topic_uuid),
             publication_timestamp: timest,
-            value: serde_json::Value::Null,
+            value: Value::Null,
             deleted: true,
             publisher_peer_id: self.local_peer_id.to_string(),
             republication_timestamp: 0,
@@ -1708,7 +1708,7 @@ impl<T: DomoPersistentStorage> MessageHandlerMut<'_, T> {
             topic_name: String::from(topic_name),
             topic_uuid: String::from(topic_uuid),
             publication_timestamp: timest,
-            value: serde_json::Value::Null,
+            value: Value::Null,
             deleted: true,
             publisher_peer_id: self.local_peer_id.to_string(),
             republication_timestamp: 0,
@@ -1739,10 +1739,10 @@ impl<T: DomoPersistentStorage> MessageHandlerMut<'_, T> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PostTopicUuidResponse {
     Volatile {
-        value: serde_json::Value,
+        value: Value,
     },
     Persistent {
-        value: serde_json::Value,
+        value: Value,
         topic_name: String,
         topic_uuid: String,
         deleted: bool,
@@ -1751,7 +1751,7 @@ pub enum PostTopicUuidResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeleteTopicUuidResponse {
-    value: serde_json::Value,
+    value: Value,
     topic_name: String,
     topic_uuid: String,
     deleted: bool,
