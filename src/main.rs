@@ -2,15 +2,17 @@ use serde_json::json;
 use time::OffsetDateTime;
 
 use std::error::Error;
+use std::fs;
 
 use tokio::io::{self, AsyncBufReadExt};
 
 use clap::Parser;
+use serde::{Deserialize, Serialize};
 use sifis_dht::domobroker::{DomoBroker, DomoBrokerConf};
 use sifis_dht::domocache::DomoEvent;
 
-#[derive(Parser, Debug)]
-struct Opt {
+#[derive(Parser, Debug, Serialize, Deserialize)]
+struct Config {
     /// Path to a sqlite file
     #[clap(parse(try_from_str))]
     sqlite_file: String,
@@ -36,26 +38,57 @@ struct Opt {
     loopback_only: bool,
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            sqlite_file: String::from("/tmp/dht_db.sqlite"),
+            private_key_file: String::from("/tmp/private.pem"),
+            is_persistent_cache: true,
+            shared_key: String::from("test_shared_key"),
+            http_port: 3000,
+            loopback_only: false
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let opt = Opt::parse();
 
-    let local = OffsetDateTime::now_utc();
+    let mut config: Config = Default::default();
 
-    log::info!("Program started at {:?}", local);
+    let mut configured = false;
 
-    let Opt {
+    if let Ok(toml_config_file_content) = fs::read_to_string("Config.toml") {
+        if let Ok(toml) = toml::from_str(&toml_config_file_content) {
+            config = toml;
+            configured = true;
+        }
+    }
+
+    if !configured {
+        config = Config::parse();
+    }
+
+    let Config {
         sqlite_file,
         private_key_file,
         is_persistent_cache,
         shared_key,
         http_port,
-        loopback_only,
-    } = opt;
+        loopback_only
+    } = config;
+
+    println!("{sqlite_file} {private_key_file} {is_persistent_cache} {shared_key} {http_port} {loopback_only}");
+
+
+    let local = OffsetDateTime::now_utc();
+
+    log::info!("Program started at {:?}", local);
 
     env_logger::init();
 
     let mut stdin = io::BufReader::new(io::stdin()).lines();
+
     let debug_console = std::env::var("DHT_DEBUG_CONSOLE").is_ok();
 
     let domo_broker_conf = DomoBrokerConf {
