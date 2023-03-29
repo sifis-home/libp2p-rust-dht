@@ -670,7 +670,7 @@ impl DomoCache {
 mod tests {
     use crate::domopersistentstorage::SqliteStorage;
 
-    async fn make_cache() -> super::DomoCache<SqliteStorage> {
+    async fn make_cache() -> super::DomoCache {
         let storage = SqliteStorage::new_in_memory();
 
         let shared_key =
@@ -678,7 +678,7 @@ mod tests {
 
         let local_key = super::Keypair::generate_ed25519();
 
-        super::DomoCache::new(true, storage, shared_key, local_key, false).await
+        super::DomoCache::new(true, Box::new(storage), shared_key, local_key, false).await
     }
 
     #[tokio::test]

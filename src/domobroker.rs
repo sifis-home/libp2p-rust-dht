@@ -1,5 +1,5 @@
 use crate::domocache::{DomoCache, DomoEvent};
-use crate::domopersistentstorage::{ PostgresStorage, SqliteStorage};
+use crate::domopersistentstorage::{PostgresStorage, SqliteStorage};
 use crate::restmessage;
 use crate::webapimanager::WebApiManager;
 use crate::websocketmessage::{
@@ -56,8 +56,6 @@ impl DomoBroker {
         let local_key = identity::Keypair::rsa_from_pkcs8(&mut pkcs8_der)
             .map_err(|e| format!("Couldn't load key: {e:?}"))?;
 
-
-
         if conf.db_type == "sqlite" {
             let storage = Box::new(SqliteStorage::new(&conf));
 
@@ -79,9 +77,7 @@ impl DomoBroker {
         }
 
         if conf.db_type == "pgsql" {
-
             if let Ok(ret) = PostgresStorage::new(&conf).await {
-
                 let storage = Box::new(ret);
 
                 let domo_cache: DomoCache = DomoCache::new(
@@ -90,14 +86,14 @@ impl DomoBroker {
                     conf.shared_key,
                     local_key,
                     conf.loopback_only,
-                ).await;
+                )
+                .await;
 
                 let web_manager = WebApiManager::new(conf.http_port);
                 return Ok(DomoBroker {
                     domo_cache,
                     web_manager,
                 });
-
             }
         }
 
@@ -348,6 +344,11 @@ mod tests {
     async fn setup_broker(http_port: u16) -> DomoBroker {
         let sqlite_file = crate::domopersistentstorage::SQLITE_MEMORY_STORAGE.to_owned();
         let domo_broker_conf = super::DomoBrokerConf {
+            db_type: "sqlite".to_string(),
+            db_url: "".to_string(),
+            db_user: "".to_string(),
+            db_password: "".to_string(),
+            house_table: "".to_string(),
             sqlite_file,
             is_persistent_cache: true,
             shared_key: String::from(

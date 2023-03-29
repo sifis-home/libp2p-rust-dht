@@ -1,13 +1,12 @@
 use crate::domobroker::DomoBrokerConf;
 use crate::domocache::DomoCacheElement;
-use native_tls::{TlsConnector};
+use async_trait::async_trait;
+use native_tls::TlsConnector;
 use postgres_native_tls::MakeTlsConnector;
 use rusqlite::{params, Connection, OpenFlags};
 use std::error::Error;
 use std::path::{Path, PathBuf};
-use async_trait::async_trait;
 use tokio_postgres::NoTls;
-
 
 pub const SQLITE_MEMORY_STORAGE: &str = "<memory>";
 
@@ -74,7 +73,7 @@ impl SqliteStorage {
 
 #[async_trait]
 impl DomoPersistentStorage for SqliteStorage {
-   async fn store(&mut self, element: &DomoCacheElement) {
+    async fn store(&mut self, element: &DomoCacheElement) {
         let _ = match self.sqlite_connection.execute(
             "INSERT OR REPLACE INTO domo_data\
              (topic_name, topic_uuid, value, deleted, publication_timestamp, publisher_peer_id)\
@@ -140,14 +139,12 @@ impl PostgresStorage {
             + &conf.db_user
             + " password="
             + &conf.db_password;
-            //+ " sslmode=require";
+        //+ " sslmode=require";
 
         //let (client, _conn) =
         //    tokio_postgres::connect(&pg_url, connector).await?;
 
-        let (client, connection) =
-            tokio_postgres::connect(&pg_url, NoTls).await?;
-
+        let (client, connection) = tokio_postgres::connect(&pg_url, NoTls).await?;
 
         tokio::spawn(async move {
             if let Err(e) = connection.await {
@@ -155,11 +152,11 @@ impl PostgresStorage {
             }
         });
 
-
         // create table if write_access = true
         if conf.is_persistent_cache {
-
-            let command = "CREATE TABLE IF NOT EXISTS ".to_owned() + &conf.house_table + "(
+            let command = "CREATE TABLE IF NOT EXISTS ".to_owned()
+                + &conf.house_table
+                + "(
                 topic_name             VARCHAR(255),
                 topic_uuid             VARCHAR(255),
                 value                  VARCHAR(3000),
@@ -168,12 +165,13 @@ impl PostgresStorage {
                 publisher_peer_id       VARCHAR(255),
                 PRIMARY KEY (topic_name, topic_uuid)
                 )";
-            let ret = client.execute(
-                &command, &[]).await;
+            let ret = client.execute(&command, &[]).await;
 
             match ret {
-                Ok(r) => {},
-                Err(e) => {println!("{e}")}
+                Ok(r) => {}
+                Err(e) => {
+                    println!("{e}")
+                }
             }
 
             println!("Database table created");
@@ -189,21 +187,26 @@ impl PostgresStorage {
 #[async_trait]
 impl DomoPersistentStorage for PostgresStorage {
     async fn store(&mut self, element: &DomoCacheElement) {
-        let command = "INSERT INTO ".to_owned() + &self.house_table +  "
+        let command = "INSERT INTO ".to_owned()
+            + &self.house_table
+            + "
              (topic_name, topic_uuid, value, deleted, publication_timestamp, publisher_peer_id)\
               VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT(topic_name, topic_uuid) DO UPDATE SET \
               value=$3, deleted=$4, publication_timestamp=$5, publisher_peer_id=$6";
-        let _ret = self.client.execute( &command
-            ,
-            &[
-                &element.topic_name,
-                &element.topic_uuid,
-                &element.value.to_string(),
-                &i32::from(element.deleted),
-                &element.publication_timestamp.to_string(),
-                &element.publisher_peer_id,
-            ]
-        ).await;
+        let _ret = self
+            .client
+            .execute(
+                &command,
+                &[
+                    &element.topic_name,
+                    &element.topic_uuid,
+                    &element.value.to_string(),
+                    &i32::from(element.deleted),
+                    &element.publication_timestamp.to_string(),
+                    &element.publisher_peer_id,
+                ],
+            )
+            .await;
 
         if let Err(_ret) = _ret {
             println!("{_ret}");
@@ -220,7 +223,7 @@ impl DomoPersistentStorage for PostgresStorage {
                 let jvalue = serde_json::from_str(&jvalue);
                 let pub_timestamp_string: String = row.get(4);
 
-                let del:i32 = row.get(3);
+                let del: i32 = row.get(3);
                 let deleted = (del == 1);
 
                 v.push(DomoCacheElement {
@@ -243,13 +246,13 @@ mod tests {
     #[test]
     #[should_panic]
     fn open_read_from_memory() {
-        let _s = super::SqliteStorage::new(super::SQLITE_MEMORY_STORAGE, false);
+        let _s = super::SqliteStorage::new_internal(super::SQLITE_MEMORY_STORAGE, false);
     }
 
     #[test]
     #[should_panic]
     fn open_read_non_existent_file() {
-        let _s = super::SqliteStorage::new("aaskdjkasdka.sqlite", false);
+        let _s = super::SqliteStorage::new_internal("aaskdjkasdka.sqlite", false);
     }
 
     #[test]
@@ -258,7 +261,7 @@ mod tests {
         assert_eq!(s.sqlite_file.to_str(), Some(super::SQLITE_MEMORY_STORAGE));
     }
 
-    #[test]
+    #[tokio::test]
     async fn test_initial_get_all_elements() {
         use super::DomoPersistentStorage;
 
@@ -267,8 +270,8 @@ mod tests {
         assert_eq!(v.len(), 0);
     }
 
-    #[test]
-    fn test_store() {
+    #[tokio::test]
+    async fn test_store() {
         use super::DomoPersistentStorage;
         let mut s = crate::domopersistentstorage::SqliteStorage::new_in_memory();
 
@@ -282,9 +285,9 @@ mod tests {
             republication_timestamp: 0,
         };
 
-        s.store(&m);
+        s.store(&m).await;
 
-        let v = s.get_all_elements();
+        let v = s.get_all_elements().await;
 
         assert_eq!(v.len(), 1);
         assert_eq!(v[0], m);
