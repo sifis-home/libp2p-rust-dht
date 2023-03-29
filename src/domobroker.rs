@@ -1,8 +1,5 @@
-use std::error::Error;
-use std::io::ErrorKind;
-
 use crate::domocache::{DomoCache, DomoEvent};
-use crate::domopersistentstorage::SqliteStorage;
+use crate::domopersistentstorage::{ PostgresStorage, SqliteStorage};
 use crate::restmessage;
 use crate::webapimanager::WebApiManager;
 use crate::websocketmessage::{
@@ -12,9 +9,11 @@ use libp2p::identity;
 use rsa::pkcs8::EncodePrivateKey;
 use rsa::RsaPrivateKey;
 use serde_json::json;
+use std::error::Error;
+use std::io::ErrorKind;
 
 pub struct DomoBroker {
-    pub domo_cache: DomoCache<SqliteStorage>,
+    pub domo_cache: DomoCache,
     pub web_manager: WebApiManager,
 }
 
@@ -25,18 +24,17 @@ pub struct DomoBrokerConf {
     pub shared_key: String,
     pub http_port: u16,
     pub loopback_only: bool,
+    pub db_user: String,
+    pub db_type: String,
+    pub db_password: String,
+    pub db_url: String,
+    pub house_table: String,
 }
 
 impl DomoBroker {
     pub async fn new(conf: DomoBrokerConf) -> Result<Self, String> {
-        if conf.sqlite_file.is_empty() {
-            return Err(String::from("sqlite_file path needed"));
-        }
-
-        let storage = SqliteStorage::new(conf.sqlite_file, conf.is_persistent_cache);
-
         // Create a random local key.
-        let mut pkcs8_der = if let Some(pk_path) = conf.private_key_file {
+        let mut pkcs8_der = if let Some(pk_path) = conf.private_key_file.clone() {
             match std::fs::read(&pk_path) {
                 Ok(pem) => {
                     let der = pem_rfc7468::decode_vec(&pem)
@@ -54,24 +52,56 @@ impl DomoBroker {
         } else {
             generate_rsa_key().1
         };
+
         let local_key = identity::Keypair::rsa_from_pkcs8(&mut pkcs8_der)
             .map_err(|e| format!("Couldn't load key: {e:?}"))?;
 
-        let domo_cache = DomoCache::new(
-            conf.is_persistent_cache,
-            storage,
-            conf.shared_key,
-            local_key,
-            conf.loopback_only,
-        )
-        .await;
 
-        let web_manager = WebApiManager::new(conf.http_port);
 
-        Ok(DomoBroker {
-            domo_cache,
-            web_manager,
-        })
+        if conf.db_type == "sqlite" {
+            let storage = Box::new(SqliteStorage::new(&conf));
+
+            let domo_cache: DomoCache = DomoCache::new(
+                conf.is_persistent_cache,
+                storage,
+                conf.shared_key.clone(),
+                local_key.clone(),
+                conf.loopback_only,
+            )
+            .await;
+
+            let web_manager = WebApiManager::new(conf.http_port);
+
+            return Ok(DomoBroker {
+                domo_cache,
+                web_manager,
+            });
+        }
+
+        if conf.db_type == "pgsql" {
+
+            if let Ok(ret) = PostgresStorage::new(&conf).await {
+
+                let storage = Box::new(ret);
+
+                let domo_cache: DomoCache = DomoCache::new(
+                    conf.is_persistent_cache,
+                    storage,
+                    conf.shared_key,
+                    local_key,
+                    conf.loopback_only,
+                ).await;
+
+                let web_manager = WebApiManager::new(conf.http_port);
+                return Ok(DomoBroker {
+                    domo_cache,
+                    web_manager,
+                });
+
+            }
+        }
+
+        Err("err".into())
     }
 
     pub async fn event_loop(&mut self) -> DomoEvent {

@@ -11,9 +11,28 @@ use serde::{Deserialize, Serialize};
 use sifis_dht::domobroker::{DomoBroker, DomoBrokerConf};
 use sifis_dht::domocache::DomoEvent;
 
-
 #[derive(Parser, Debug, Serialize, Deserialize)]
 struct Config {
+    /// DB Type: sqlite, pgsql
+    #[clap(parse(try_from_str))]
+    db_type: String,
+
+    /// DB User
+    #[clap(parse(try_from_str))]
+    db_user: String,
+
+    /// DB Password
+    #[clap(parse(try_from_str))]
+    db_password: String,
+
+    /// DB Table used for the house
+    #[clap(parse(try_from_str))]
+    house_table: String,
+
+    /// DB URL
+    #[clap(parse(try_from_str))]
+    db_url: String,
+
     /// Path to a sqlite file
     #[clap(parse(try_from_str))]
     sqlite_file: String,
@@ -42,40 +61,42 @@ struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
+            db_type: String::from("sqlite"),
+            db_user: String::from(""),
+            db_password: String::from(""),
+            db_url: String::from(""),
+            house_table: String::from(""),
             sqlite_file: String::from("/tmp/dht_db.sqlite"),
             private_key_file: String::from("/tmp/private.pem"),
             is_persistent_cache: true,
             shared_key: String::from("test_shared_key"),
             http_port: 3000,
-            loopback_only: false
+            loopback_only: false,
         }
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-
     let mut config: Config = Default::default();
 
     let mut configured = false;
 
     if let Ok(toml_config_file_content) = fs::read_to_string("Config.toml") {
-
         let cfg = toml_config_file_content.parse::<toml::Table>();
 
         match cfg {
             Ok(cfg) => {
                 println!("cfg {:?}", cfg);
-                if let Some(sifis_dht_config ) = cfg.get("sifis_dht") {
-                    if let Ok(c)  = sifis_dht_config.clone().try_into::<Config>() {
+                if let Some(sifis_dht_config) = cfg.get("sifis_dht") {
+                    if let Ok(c) = sifis_dht_config.clone().try_into::<Config>() {
                         config = c;
                         configured = true;
                     }
                 }
-            },
+            }
             _ => {}
         }
-
     }
 
     if !configured {
@@ -83,16 +104,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let Config {
+        db_type,
+        db_user,
+        db_password,
+        db_url,
+        house_table,
         sqlite_file,
         private_key_file,
         is_persistent_cache,
         shared_key,
         http_port,
-        loopback_only
+        loopback_only,
     } = config;
 
     println!("{sqlite_file} {private_key_file} {is_persistent_cache} {shared_key} {http_port} {loopback_only}");
-
 
     let local = OffsetDateTime::now_utc();
 
@@ -105,6 +130,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let debug_console = std::env::var("DHT_DEBUG_CONSOLE").is_ok();
 
     let domo_broker_conf = DomoBrokerConf {
+        db_type,
+        db_user,
+        db_password,
+        db_url,
+        house_table,
         sqlite_file,
         private_key_file: Some(private_key_file),
         is_persistent_cache,
@@ -114,6 +144,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
 
     let mut domo_broker = DomoBroker::new(domo_broker_conf).await?;
+
+    domo_broker.domo_cache.print();
 
     if debug_console {
         loop {

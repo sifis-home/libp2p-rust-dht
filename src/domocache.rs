@@ -63,8 +63,8 @@ impl Display for DomoCacheElement {
     }
 }
 
-pub struct DomoCache<T: DomoPersistentStorage> {
-    pub storage: T,
+pub struct DomoCache {
+    pub storage: Box<dyn DomoPersistentStorage>,
     pub cache: BTreeMap<String, BTreeMap<String, DomoCacheElement>>,
     pub peers_caches_state: BTreeMap<String, DomoCacheStateMessage>,
     pub publish_cache_counter: u8,
@@ -77,7 +77,7 @@ pub struct DomoCache<T: DomoPersistentStorage> {
     send_cache_state_timer: tokio::time::Instant,
 }
 
-impl<T: DomoPersistentStorage> Hash for DomoCache<T> {
+impl Hash for DomoCache {
     fn hash<H: Hasher>(&self, state: &mut H) {
         for (topic_name, map_topic_name) in self.cache.iter() {
             topic_name.hash(state);
@@ -90,7 +90,7 @@ impl<T: DomoPersistentStorage> Hash for DomoCache<T> {
     }
 }
 
-impl<T: DomoPersistentStorage> DomoCache<T> {
+impl DomoCache {
     #[allow(unused)]
     pub fn filter_with_topic_name(
         &self,
@@ -433,7 +433,7 @@ impl<T: DomoPersistentStorage> DomoCache<T> {
 
     pub async fn new(
         is_persistent_cache: bool,
-        storage: T,
+        storage: Box<dyn DomoPersistentStorage>,
         shared_key: String,
         local_key_pair: Keypair,
         loopback_only: bool,
@@ -465,7 +465,7 @@ impl<T: DomoPersistentStorage> DomoCache<T> {
 
         // Populate the cache with the sqlite contents
 
-        let ret = c.storage.get_all_elements();
+        let ret = c.storage.get_all_elements().await;
 
         for elem in ret {
             // non ripubblico
@@ -605,7 +605,7 @@ impl<T: DomoPersistentStorage> DomoCache<T> {
             }
 
             if persist {
-                self.storage.store(&cache_element);
+                self.storage.store(&cache_element).await;
             }
         }
 

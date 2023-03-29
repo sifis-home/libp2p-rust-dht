@@ -1,3 +1,5 @@
+extern crate core;
+
 pub mod domobroker;
 pub mod domocache;
 pub mod domolibp2p;
