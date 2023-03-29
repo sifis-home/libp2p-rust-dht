@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use sifis_dht::domobroker::{DomoBroker, DomoBrokerConf};
 use sifis_dht::domocache::DomoEvent;
 
+
 #[derive(Parser, Debug, Serialize, Deserialize)]
 struct Config {
     /// Path to a sqlite file
@@ -59,10 +60,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut configured = false;
 
     if let Ok(toml_config_file_content) = fs::read_to_string("Config.toml") {
-        if let Ok(toml) = toml::from_str(&toml_config_file_content) {
-            config = toml;
-            configured = true;
+
+        let cfg = toml_config_file_content.parse::<toml::Table>();
+
+        match cfg {
+            Ok(cfg) => {
+                println!("cfg {:?}", cfg);
+                if let Some(sifis_dht_config ) = cfg.get("sifis_dht") {
+                    if let Ok(c)  = sifis_dht_config.clone().try_into::<Config>() {
+                        config = c;
+                        configured = true;
+                    }
+                }
+            },
+            _ => {}
         }
+
     }
 
     if !configured {
