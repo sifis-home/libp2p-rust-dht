@@ -27,6 +27,10 @@ pub enum RestMessage {
         value: serde_json::Value,
         responder: RestResponder,
     },
+    Rekey {
+        new_key: String,
+        responder: RestResponder,
+    },
     PubMessage {
         value: serde_json::Value,
         responder: RestResponder,

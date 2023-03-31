@@ -73,6 +73,8 @@ impl WebApiManager {
 
         let tx_delete_topicname_topicuuid = tx_rest.clone();
 
+        let tx_rekey = tx_rest.clone();
+
         let tx_pub_message = tx_rest;
 
         let (async_tx_websocket, mut _async_rx_websocket) =
@@ -109,6 +111,10 @@ impl WebApiManager {
                 "/topic_name/:topic_name/topic_uuid/:topic_uuid",
                 delete(WebApiManager::delete_topicname_topicuuid_handler)
                     .layer(Extension(tx_delete_topicname_topicuuid)),
+            )
+            .route(
+                "/rekey",
+                post(WebApiManager::post_rekey).layer(Extension(tx_rekey)),
             )
             .route(
                 "/pub",
@@ -173,6 +179,27 @@ impl WebApiManager {
 
         let m = restmessage::RestMessage::PubMessage {
             value,
+            responder: tx_resp,
+        };
+
+        tx_rest.send(m).await.unwrap();
+
+        let resp = rx_resp.await.unwrap();
+
+        match resp {
+            Ok(resp) => (StatusCode::OK, Json(resp)),
+            Err(_e) => (StatusCode::NOT_FOUND, Json(json!({}))),
+        }
+    }
+
+    async fn post_rekey(
+        new_key: String,
+        Extension(tx_rest): Extension<Sender<restmessage::RestMessage>>,
+    ) -> impl IntoResponse {
+        let (tx_resp, rx_resp) = oneshot::channel();
+
+        let m = restmessage::RestMessage::Rekey {
+            new_key,
             responder: tx_resp,
         };
 

@@ -251,6 +251,14 @@ impl DomoBroker {
                     Err(_e) => log::debug!("Error while sending Rest Reponse"),
                 }
             }
+            restmessage::RestMessage::Rekey { new_key, responder } => {
+                let res = self.domo_cache.rekey(new_key).await;
+                let res_to_send = res.map(|_| json!({})).map_err(|_| String::new());
+                match responder.send(res_to_send) {
+                    Ok(_m) => log::debug!("Rest response ok"),
+                    Err(_e) => log::debug!("Error while sending Rest Reponse"),
+                }
+            }
             restmessage::RestMessage::PubMessage { value, responder } => {
                 self.domo_cache.pub_value(value.clone()).await;
                 match responder.send(Ok(value)) {

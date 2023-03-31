@@ -69,6 +69,8 @@ pub struct DomoCache<T: DomoPersistentStorage> {
     pub peers_caches_state: BTreeMap<String, DomoCacheStateMessage>,
     pub publish_cache_counter: u8,
     pub last_cache_repub_timestamp: u128,
+    pub loopback_only: bool,
+    pub local_key_pair: Keypair,
     pub swarm: libp2p::Swarm<crate::domolibp2p::DomoBehaviour>,
     pub is_persistent_cache: bool,
     pub local_peer_id: String,
@@ -438,7 +440,7 @@ impl<T: DomoPersistentStorage> DomoCache<T> {
         local_key_pair: Keypair,
         loopback_only: bool,
     ) -> Self {
-        let swarm = crate::domolibp2p::start(shared_key, local_key_pair, loopback_only)
+        let swarm = crate::domolibp2p::start(shared_key, local_key_pair.clone(), loopback_only)
             .await
             .unwrap();
 
@@ -452,6 +454,8 @@ impl<T: DomoPersistentStorage> DomoCache<T> {
         let mut c = DomoCache {
             is_persistent_cache,
             swarm,
+            loopback_only,
+            local_key_pair,
             local_peer_id: peer_id,
             publish_cache_counter: 4,
             last_cache_repub_timestamp: 0,
@@ -534,6 +538,23 @@ impl<T: DomoPersistentStorage> DomoCache<T> {
                 }
             }
         }
+    }
+
+    pub async fn rekey(&mut self, shared_key: String) -> Result<(), Box<dyn Error>> {
+        let swarm =
+            crate::domolibp2p::start(shared_key, self.local_key_pair.clone(), self.loopback_only)
+                .await?;
+
+        let peer_id = swarm.local_peer_id().to_string();
+
+        assert_eq!(
+            peer_id, self.local_peer_id,
+            "Peer IDs need to match before and after rekeying"
+        );
+
+        self.swarm = swarm;
+
+        Ok(())
     }
 
     pub fn print_cache_hash(&self) {
