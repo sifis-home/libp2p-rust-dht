@@ -438,7 +438,7 @@ impl<T: DomoPersistentStorage> DomoCache<T> {
         local_key_pair: Keypair,
         loopback_only: bool,
     ) -> Self {
-        let swarm = crate::domolibp2p::start(shared_key, local_key_pair, loopback_only)
+        let swarm = crate::domolibp2p::start(&shared_key, local_key_pair, loopback_only)
             .await
             .unwrap();
 

@@ -26,9 +26,9 @@ use libp2p::swarm::SwarmBuilder;
 use std::error::Error;
 use std::time::Duration;
 
-const KEY_SIZE: usize = 32;
+pub const KEY_SIZE: usize = 32;
 
-fn parse_hex_key(s: &str) -> Result<[u8; KEY_SIZE], String> {
+pub fn parse_hex_key(s: &str) -> Result<[u8; KEY_SIZE], String> {
     if s.len() == KEY_SIZE * 2 {
         let mut r = [0u8; KEY_SIZE];
         for i in 0..KEY_SIZE {
@@ -72,22 +72,29 @@ pub fn build_transport(
 }
 
 pub async fn start(
-    shared_key: String,
+    shared_key: &str,
     local_key_pair: identity::Keypair,
     loopback_only: bool,
 ) -> Result<Swarm<DomoBehaviour>, Box<dyn Error>> {
+    let shared_key = parse_hex_key(shared_key)?;
+    let topics = [
+        Topic::new("domo-node-manager"),
+        Topic::new("domo-persistent-data"),
+        Topic::new("domo-volatile-data"),
+        Topic::new("domo-config"),
+    ];
+    start_with_topics(shared_key, local_key_pair, loopback_only, &topics).await
+}
+
+pub async fn start_with_topics(
+    shared_key: [u8; KEY_SIZE],
+    local_key_pair: identity::Keypair,
+    loopback_only: bool,
+    topics: &[Topic],
+) -> Result<Swarm<DomoBehaviour>, Box<dyn Error>> {
     let local_peer_id = PeerId::from(local_key_pair.public());
 
-    // Create a Gossipsub topic
-    let topic_persistent_data = Topic::new("domo-persistent-data");
-    let topic_volatile_data = Topic::new("domo-volatile-data");
-    let topic_config = Topic::new("domo-config");
-
-    let arr = parse_hex_key(&shared_key);
-    let psk = match arr {
-        Ok(s) => Some(PreSharedKey::new(s)),
-        Err(_e) => panic!("Invalid key"),
-    };
+    let psk = Some(PreSharedKey::new(shared_key));
 
     let transport = build_transport(local_key_pair.clone(), psk);
 
@@ -125,14 +132,10 @@ pub async fn start(
         )
         .expect("Correct configuration");
 
-        // subscribes to persistent data topic
-        gossipsub.subscribe(&topic_persistent_data).unwrap();
-
-        // subscribes to volatile data topic
-        gossipsub.subscribe(&topic_volatile_data).unwrap();
-
-        // subscribes to config topic
-        gossipsub.subscribe(&topic_config).unwrap();
+        // subscribes to the GossipSub topics
+        for topic in topics {
+            gossipsub.subscribe(topic).unwrap();
+        }
 
         let behaviour = DomoBehaviour { mdns, gossipsub };
         //Swarm::new(transport, behaviour, local_peer_id)
