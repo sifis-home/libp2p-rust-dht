@@ -170,6 +170,7 @@ pub fn dht_channel(
                     }
                 }
             }
+            tokio::task::yield_now().await;
         }
     });
 
