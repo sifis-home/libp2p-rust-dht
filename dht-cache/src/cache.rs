@@ -251,39 +251,42 @@ pub fn cache_channel(
 
                     let hash = local_write.get_hash().await;
 
-                    let mut peers_state = peers_state.write().await;
+                    let republish = {
+                        let mut peers_state = peers_state.write().await;
 
-                    // update the peers_caches_state
-                    peers_state.insert(m);
+                        // update the peers_caches_state
+                        peers_state.insert(m);
 
-                    // check for desync
-                    let sync_info = peers_state.is_synchronized(&peer_id, hash);
+                        // check for desync
+                        let sync_info = peers_state.is_synchronized(&peer_id, hash);
 
-                    log::debug!("local {peer_id:?} {sync_info:?}  -> {peers_state:#?}");
+                        log::debug!("local {peer_id:?} {sync_info:?}  -> {peers_state:#?}");
+
+                        if let CacheState::Desynced { is_leader } = sync_info {
+                            is_leader
+                                && utils::get_epoch_ms() - peers_state.last_repub_timestamp
+                                    >= peers_state.repub_interval
+                        } else {
+                            false
+                        }
+                    };
 
                     // republish the local cache if needed
-                    if let CacheState::Desynced { is_leader } = sync_info {
-                        if is_leader
-                            && utils::get_epoch_ms() - peers_state.last_repub_timestamp
-                                >= peers_state.repub_interval
-                        {
-                            local_write
-                                .read_owned()
-                                .await
-                                .mem
-                                .values()
-                                .flat_map(|topic| topic.values())
-                                .for_each(|elem| {
-                                    let mut elem = elem.to_owned();
-                                    log::debug!("resending {}", elem.topic_uuid);
-                                    elem.republication_timestamp = utils::get_epoch_ms();
-                                    cmd.send(Command::Publish(
-                                        serde_json::to_value(&elem).unwrap(),
-                                    ))
+                    if republish {
+                        local_write
+                            .read_owned()
+                            .await
+                            .mem
+                            .values()
+                            .flat_map(|topic| topic.values())
+                            .for_each(|elem| {
+                                let mut elem = elem.to_owned();
+                                log::debug!("resending {}", elem.topic_uuid);
+                                elem.republication_timestamp = utils::get_epoch_ms();
+                                cmd.send(Command::Publish(serde_json::to_value(&elem).unwrap()))
                                     .unwrap();
-                                });
-                            peers_state.last_repub_timestamp = utils::get_epoch_ms();
-                        }
+                            });
+                        peers_state.write().await.last_repub_timestamp = utils::get_epoch_ms();
                     }
 
                     None
