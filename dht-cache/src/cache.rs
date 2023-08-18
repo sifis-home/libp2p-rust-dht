@@ -169,7 +169,7 @@ impl PeersState {
         self.list.insert(state.peer_id.to_string(), state);
     }
 
-    async fn is_synchronized(&self, peer_id: &str, hash: u64) -> CacheState {
+    fn is_synchronized(&self, peer_id: &str, hash: u64) -> CacheState {
         let cur_ts = utils::get_epoch_ms() - self.repub_interval;
         let desync = self
             .list
@@ -257,7 +257,7 @@ pub fn cache_channel(
                     peers_state.insert(m);
 
                     // check for desync
-                    let sync_info = peers_state.is_synchronized(&peer_id, hash).await;
+                    let sync_info = peers_state.is_synchronized(&peer_id, hash);
 
                     log::debug!("local {peer_id:?} {sync_info:?}  -> {peers_state:#?}");
 
