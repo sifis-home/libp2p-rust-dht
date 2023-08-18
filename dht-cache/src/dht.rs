@@ -178,12 +178,45 @@ pub fn dht_channel(
 
 #[cfg(test)]
 pub(crate) mod test {
+    use std::time::Duration;
+
     use super::*;
+    use crate::Keypair;
+    use libp2p::core::transport::MemoryTransport;
+    use libp2p::core::upgrade::Version;
+    use libp2p::plaintext::PlainText2Config;
+    use libp2p::pnet::{PnetConfig, PreSharedKey};
+    use libp2p::swarm::SwarmBuilder;
+    use libp2p::yamux;
+    use libp2p::Transport;
     use libp2p_swarm_test::SwarmExt;
     use serde_json::json;
 
-    pub async fn make_peer() -> Swarm<DomoBehaviour> {
-        let mut a = Swarm::new_ephemeral(|identity| DomoBehaviour::new(&identity).unwrap());
+    // like Swarm::new_ephemeral but with pnet variant
+    fn new_ephemeral(
+        behaviour_fn: impl FnOnce(Keypair) -> DomoBehaviour,
+        variant: u8,
+    ) -> Swarm<DomoBehaviour> {
+        let identity = Keypair::generate_ed25519();
+        let peer_id = PeerId::from(identity.public());
+        let psk = PreSharedKey::new([variant; 32]);
+
+        let transport = MemoryTransport::default()
+            .or_transport(libp2p::tcp::async_io::Transport::default())
+            .and_then(move |socket, _| PnetConfig::new(psk).handshake(socket))
+            .upgrade(Version::V1)
+            .authenticate(PlainText2Config {
+                local_public_key: identity.public(),
+            })
+            .multiplex(yamux::Config::default())
+            .timeout(Duration::from_secs(20))
+            .boxed();
+
+        SwarmBuilder::without_executor(transport, behaviour_fn(identity), peer_id).build()
+    }
+
+    pub async fn make_peer(variant: u8) -> Swarm<DomoBehaviour> {
+        let mut a = new_ephemeral(|identity| DomoBehaviour::new(&identity).unwrap(), variant);
         a.listen().await;
 
         a
@@ -199,11 +232,11 @@ pub(crate) mod test {
         }
     }
 
-    pub async fn make_peers() -> [Swarm<DomoBehaviour>; 3] {
+    pub async fn make_peers(variant: u8) -> [Swarm<DomoBehaviour>; 3] {
         let _ = env_logger::builder().is_test(true).try_init();
-        let mut a = Swarm::new_ephemeral(|identity| DomoBehaviour::new(&identity).unwrap());
-        let mut b = Swarm::new_ephemeral(|identity| DomoBehaviour::new(&identity).unwrap());
-        let mut c = Swarm::new_ephemeral(|identity| DomoBehaviour::new(&identity).unwrap());
+        let mut a = new_ephemeral(|identity| DomoBehaviour::new(&identity).unwrap(), variant);
+        let mut b = new_ephemeral(|identity| DomoBehaviour::new(&identity).unwrap(), variant);
+        let mut c = new_ephemeral(|identity| DomoBehaviour::new(&identity).unwrap(), variant);
 
         for a in a.external_addresses() {
             log::info!("{a:?}");
@@ -240,7 +273,7 @@ pub(crate) mod test {
 
     #[tokio::test]
     async fn multiple_peers() {
-        let [a, b, c] = make_peers().await;
+        let [a, b, c] = make_peers(1).await;
 
         let (a_s, mut ar, _) = dht_channel(a);
         let (b_s, br, _) = dht_channel(b);

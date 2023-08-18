@@ -338,10 +338,10 @@ mod test {
         let (_cache, _events) = Builder::from_config(cfg).make_channel().await.unwrap();
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test]
     async fn syncronization() {
-        let [mut a, mut b, mut c] = make_peers().await;
-        let mut d = make_peer().await;
+        let [mut a, mut b, mut c] = make_peers(2).await;
+        let mut d = make_peer(2).await;
 
         connect_peer(&mut a, &mut d).await;
         connect_peer(&mut b, &mut d).await;
