@@ -358,9 +358,9 @@ mod test {
             .collect();
 
         tokio::task::spawn(async move {
-            let (a_c, a_ev) = cache_channel(a_local_cache, a, 1000);
-            let (_b_c, b_ev) = cache_channel(b_local_cache, b, 1000);
-            let (_c_c, c_ev) = cache_channel(c_local_cache, c, 1000);
+            let (a_c, a_ev) = cache_channel(a_local_cache, a, 100);
+            let (_b_c, b_ev) = cache_channel(b_local_cache, b, 100);
+            let (_c_c, c_ev) = cache_channel(c_local_cache, c, 100);
 
             let mut a_ev = pin!(a_ev);
             let mut b_ev = pin!(b_ev);
