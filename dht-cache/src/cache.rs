@@ -251,7 +251,6 @@ pub fn cache_channel(
 
                     let hash = local_write.get_hash().await;
 
-                    // SAFETY: only user
                     let mut peers_state = peers_state.write().await;
 
                     // update the peers_caches_state
