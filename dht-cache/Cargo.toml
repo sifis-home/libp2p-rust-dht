@@ -35,7 +35,7 @@ tokio-stream = "0.1.14"
 [dev-dependencies]
 env_logger = "0.10.0"
 libp2p-swarm-test = "0.2.0"
-
+libp2p = { version = "0.52.0", features = ["plaintext"] }
 
 [package.metadata.cargo-udeps.ignore]
 normal = ["openssl-sys", "libsqlite3-sys", "libc"]
