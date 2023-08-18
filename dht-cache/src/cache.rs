@@ -327,7 +327,7 @@ mod test {
     use crate::dht::test::*;
     use std::{collections::HashSet, pin::pin};
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn builder() {
         let cfg = crate::Config {
             shared_key: "d061545647652562b4648f52e8373b3a417fc0df56c332154460da1801b341e9"
