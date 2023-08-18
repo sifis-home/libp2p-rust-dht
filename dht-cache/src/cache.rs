@@ -358,7 +358,7 @@ mod test {
     use crate::dht::test::*;
     use std::{collections::HashSet, pin::pin};
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
     async fn builder() {
         let cfg = crate::Config {
             shared_key: "d061545647652562b4648f52e8373b3a417fc0df56c332154460da1801b341e9"
@@ -369,7 +369,7 @@ mod test {
         let (_cache, _events) = Builder::from_config(cfg).make_channel().await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn syncronization() {
         let [mut a, mut b, mut c] = make_peers(2).await;
         let mut d = make_peer(2).await;
