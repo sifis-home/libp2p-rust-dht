@@ -57,7 +57,7 @@ impl Builder {
                     std::fs::write(pk_path, pem)?;
                     der
                 }
-                Err(e) => Err(e)?,
+                Err(e) => return Err(e.into()),
             }
         } else {
             generate_rsa_key().1
@@ -99,7 +99,7 @@ impl Cache {
     /// Send a volatile message
     ///
     /// Volatile messages are unstructured and do not persist in the DHT.
-    pub fn send(&self, value: &Value) -> Result<(), Error> {
+    pub fn send(&self, value: Value) -> Result<(), Error> {
         self.cmd
             .send(Command::Broadcast(value.to_owned()))
             .map_err(|_| Error::Channel)?;
@@ -110,11 +110,16 @@ impl Cache {
     /// Persist a value within the DHT
     ///
     /// It is identified by the topic and uuid value
-    pub async fn put(&self, topic: &str, uuid: &str, value: &Value) -> Result<(), Error> {
+    pub async fn put(
+        &self,
+        topic: impl Into<String>,
+        uuid: impl Into<String>,
+        value: Value,
+    ) -> Result<(), Error> {
         let elem = DomoCacheElement {
-            topic_name: topic.to_string(),
-            topic_uuid: uuid.to_string(),
-            value: value.to_owned(),
+            topic_name: topic.into(),
+            topic_uuid: uuid.into(),
+            value,
             publication_timestamp: utils::get_epoch_ms(),
             publisher_peer_id: self.peer_id.clone(),
             ..Default::default()
@@ -133,10 +138,14 @@ impl Cache {
     ///
     /// It inserts the deletion entry and the entry value will be marked as deleted and removed
     /// from the stored cache.
-    pub async fn del(&self, topic: &str, uuid: &str) -> Result<(), Error> {
+    pub async fn del(
+        &self,
+        topic: impl Into<String>,
+        uuid: impl Into<String>,
+    ) -> Result<(), Error> {
         let elem = DomoCacheElement {
-            topic_name: topic.to_string(),
-            topic_uuid: uuid.to_string(),
+            topic_name: topic.into(),
+            topic_uuid: uuid.into(),
             publication_timestamp: utils::get_epoch_ms(),
             publisher_peer_id: self.peer_id.clone(),
             deleted: true,
@@ -317,6 +326,10 @@ pub fn cache_channel(
                                 let mut elem = elem.to_owned();
                                 log::debug!("resending {}", elem.topic_uuid);
                                 elem.republication_timestamp = utils::get_epoch_ms();
+
+                                // This cannot fail because `cmd` is the sender part of the
+                                // `stream` we are currently reading. In practice, we are
+                                // queueing the commands in order to read them later.
                                 cmd.send(Command::Publish(serde_json::to_value(&elem).unwrap()))
                                     .unwrap();
                             });
@@ -411,7 +424,7 @@ mod test {
                     .put(
                         "Topic",
                         &format!("uuid-{uuid}"),
-                        &serde_json::json!({"key": uuid}),
+                        serde_json::json!({"key": uuid}),
                     )
                     .await;
             }
