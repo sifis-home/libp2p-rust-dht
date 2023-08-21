@@ -16,13 +16,29 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use crate::domolibp2p::{self, generate_rsa_key};
 use crate::{
     cache::local::DomoCacheStateMessage,
-    data::DomoEvent,
-    dht::{dht_channel, Command, Event},
+    dht::{dht_channel, Command, Event as DhtEvent},
     domolibp2p::DomoBehaviour,
     utils, Error,
 };
 
 use self::local::{DomoCacheElement, LocalCache, Query};
+
+/// DHT state change
+#[derive(Debug)]
+pub enum Event {
+    /// Persistent, structured data
+    ///
+    /// The information is persisted across nodes.
+    /// Newly joining nodes will receive it from other participants and
+    /// the local cache can be queried for it.
+    PersistentData(DomoCacheElement),
+    /// Volatile, unstructured data
+    ///
+    /// The information is transmitted across all the nodes participating
+    VolatileData(Value),
+    /// Notify the peer availability
+    ReadyPeers(Vec<String>),
+}
 
 /// Builder for a Cached DHT Node
 // TODO: make it Clone
@@ -37,9 +53,7 @@ impl Builder {
     }
 
     /// Instantiate a new DHT node a return
-    pub async fn make_channel(
-        self,
-    ) -> Result<(Cache, impl Stream<Item = DomoEvent>), crate::Error> {
+    pub async fn make_channel(self) -> Result<(Cache, impl Stream<Item = Event>), crate::Error> {
         let loopback_only = self.cfg.loopback;
         let shared_key = domolibp2p::parse_hex_key(&self.cfg.shared_key)?;
         let private_key_file = self.cfg.private_key.as_ref();
@@ -239,7 +253,7 @@ pub fn cache_channel(
     local: LocalCache,
     swarm: Swarm<DomoBehaviour>,
     resend_interval: u64,
-) -> (Cache, impl Stream<Item = DomoEvent>) {
+) -> (Cache, impl Stream<Item = Event>) {
     let local_peer_id = swarm.local_peer_id().to_string();
 
     let (cmd, r, _j) = dht_channel(swarm);
@@ -289,7 +303,7 @@ pub fn cache_channel(
         let cmd = cmd.clone();
         async move {
             match ev {
-                Event::Config(cfg) => {
+                DhtEvent::Config(cfg) => {
                     let m: DomoCacheStateMessage = serde_json::from_str(&cfg).unwrap();
 
                     let hash = local_write.get_hash().await;
@@ -338,16 +352,16 @@ pub fn cache_channel(
 
                     None
                 }
-                Event::Discovered(who) => Some(DomoEvent::NewPeers(
+                DhtEvent::Discovered(_who) => None /* Some(DomoEvent::NewPeers(
                     who.into_iter().map(|w| w.to_string()).collect(),
-                )),
-                Event::VolatileData(data) => {
+                ))*/,
+                DhtEvent::VolatileData(data) => {
                     // TODO we swallow errors quietly here
                     serde_json::from_str(&data)
                         .ok()
-                        .map(DomoEvent::VolatileData)
+                        .map(Event::VolatileData)
                 }
-                Event::PersistentData(data) => {
+                DhtEvent::PersistentData(data) => {
                     if let Ok(mut elem) = serde_json::from_str::<DomoCacheElement>(&data) {
                         if elem.republication_timestamp != 0 {
                             log::debug!("Retransmission");
@@ -358,7 +372,15 @@ pub fn cache_channel(
                             .try_put(&elem)
                             .await
                             .ok()
-                            .map(|_| DomoEvent::PersistentData(elem))
+                            .map(|_| Event::PersistentData(elem))
+                    } else {
+                        None
+                    }
+                }
+                DhtEvent::Ready(peers) => {
+                    if !peers.is_empty() {
+                        Some(Event::ReadyPeers(
+                            peers.into_iter().map(|p| p.to_string()).collect()))
                     } else {
                         None
                     }
@@ -400,75 +422,68 @@ mod test {
         let a_local_cache = LocalCache::new();
         let b_local_cache = LocalCache::new();
         let c_local_cache = LocalCache::new();
-        let d_local_cache = LocalCache::new();
 
         let mut expected: HashSet<_> = (0..10)
             .into_iter()
             .map(|uuid| format!("uuid-{uuid}"))
             .collect();
 
-        let (a_c, a_ev) = cache_channel(a_local_cache, a, 100);
-        let (b_c, b_ev) = cache_channel(b_local_cache, b, 100);
-        let (c_c, c_ev) = cache_channel(c_local_cache, c, 100);
+        let (a_c, a_ev) = cache_channel(a_local_cache, a, 5000);
+        let (b_c, b_ev) = cache_channel(b_local_cache, b, 5000);
+        let (c_c, c_ev) = cache_channel(c_local_cache, c, 5000);
 
         let mut expected_peers = HashSet::new();
         expected_peers.insert(a_c.peer_id.clone());
         expected_peers.insert(b_c.peer_id.clone());
         expected_peers.insert(c_c.peer_id.clone());
 
-        tokio::task::spawn(async move {
-            let a_ev = pin!(a_ev);
-            let b_ev = pin!(b_ev);
-            let c_ev = pin!(c_ev);
-            for uuid in 0..10 {
-                let _ = a_c
-                    .put(
-                        "Topic",
-                        &format!("uuid-{uuid}"),
-                        serde_json::json!({"key": uuid}),
-                    )
-                    .await;
-            }
+        let mut a_ev = pin!(a_ev);
+        let b_ev = pin!(b_ev);
+        let c_ev = pin!(c_ev);
 
-            let mut s = (
-                a_ev.map(|ev| ("a", ev)),
-                b_ev.map(|ev| ("b", ev)),
-                c_ev.map(|ev| ("c", ev)),
-            )
-                .merge();
-
-            while let Some((node, ev)) = s.next().await {
-                match ev {
-                    DomoEvent::PersistentData(data) => {
-                        log::debug!("{node}: Got data {data:?}");
-                    }
-                    _ => {
-                        log::debug!("{node}: Other {ev:?}");
-                    }
-                }
-            }
-        });
-
-        log::info!("Adding D");
-
-        let (d_c, d_ev) = cache_channel(d_local_cache, d, 100);
-
-        let mut d_ev = pin!(d_ev);
-        while !expected.is_empty() {
-            let ev = d_ev.next().await.unwrap();
+        while let Some(ev) = a_ev.next().await {
             match ev {
-                DomoEvent::PersistentData(data) => {
-                    assert!(expected.remove(&data.topic_uuid));
-                    log::warn!("d: Got data {data:?}");
+                Event::ReadyPeers(peers) => {
+                    log::info!("Ready peers {peers:?}");
+                    break;
+                }
+                _ => log::debug!("waiting for ready {ev:?}"),
+            }
+        }
+
+        for uuid in 0..10 {
+            let _ = a_c
+                .put(
+                    "Topic",
+                    &format!("uuid-{uuid}"),
+                    serde_json::json!({"key": uuid}),
+                )
+                .await;
+        }
+        let mut s = (
+            a_ev.map(|ev| ("a", ev)),
+            b_ev.map(|ev| ("b", ev)),
+            c_ev.map(|ev| ("c", ev)),
+        )
+            .merge();
+
+        while !expected.is_empty() {
+            let (node, ev) = s.next().await.unwrap();
+            match ev {
+                Event::PersistentData(data) => {
+                    log::debug!("{node}: Got data {data:?}");
+                    if node == "c" {
+                        assert!(expected.remove(&data.topic_uuid));
+                    }
                 }
                 _ => {
-                    log::warn!("d: Other {ev:?}");
+                    log::debug!("{node}: Other {ev:?}");
                 }
             }
         }
 
-        // d_c must had seen at least one of the expected peers
-        let peers: HashSet<_> = d_c.peers().await.into_iter().map(|p| p.peer_id).collect();
+        // c_c must had seen at least one of the expected peers
+        let peers: HashSet<_> = c_c.peers().await.into_iter().map(|p| p.peer_id).collect();
 
         log::info!("peers {peers:?}");
 

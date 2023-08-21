@@ -1,6 +1,8 @@
 //! DHT Abstraction
 //!
 
+use std::time::Duration;
+
 use crate::domolibp2p::{DomoBehaviour, OutEvent};
 use futures::prelude::*;
 use libp2p::{gossipsub::IdentTopic as Topic, swarm::SwarmEvent, Swarm};
@@ -26,6 +28,7 @@ pub enum Event {
     VolatileData(String),
     Config(String),
     Discovered(Vec<PeerId>),
+    Ready(Vec<PeerId>),
 }
 
 fn handle_command(swarm: &mut Swarm<DomoBehaviour>, cmd: Command) -> bool {
@@ -36,7 +39,7 @@ fn handle_command(swarm: &mut Swarm<DomoBehaviour>, cmd: Command) -> bool {
             let m = serde_json::to_string(&val).unwrap();
 
             if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, m.as_bytes()) {
-                log::info!("Publish error: {e:?}");
+                log::info!("Boradcast error: {e:?}");
             }
             true
         }
@@ -57,7 +60,7 @@ fn handle_command(swarm: &mut Swarm<DomoBehaviour>, cmd: Command) -> bool {
             let topic = Topic::new("domo-config");
             let m = serde_json::to_string(&val).unwrap();
             if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, m.as_bytes()) {
-                log::info!("Publish error: {e:?}");
+                log::info!("Config error: {e:?}");
             }
             true
         }
@@ -117,6 +120,11 @@ fn handle_swarm_event<E>(
                 }
             }
         }
+        SwarmEvent::Behaviour(crate::domolibp2p::OutEvent::Gossipsub(
+            libp2p::gossipsub::Event::Subscribed { peer_id, topic },
+        )) => {
+            log::debug!("Peer {peer_id} subscribed to {}", topic.as_str());
+        }
         SwarmEvent::Behaviour(crate::domolibp2p::OutEvent::Mdns(mdns::Event::Expired(list))) => {
             let local = OffsetDateTime::now_utc();
 
@@ -154,16 +162,37 @@ pub fn dht_channel(
     let (ev_send, ev_recv) = mpsc::unbounded_channel();
 
     let handle = tokio::task::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        let volatile = Topic::new("domo-volatile-data").hash();
+        let persistent = Topic::new("domo-persistent-data").hash();
+        let config = Topic::new("domo-config").hash();
         loop {
+            log::trace!("Looping {}", swarm.local_peer_id());
             tokio::select! {
+                // the mdns event is not enough to ensure we can send messages
+                _ = interval.tick() => {
+                    log::debug!("{} Checking for peers", swarm.local_peer_id());
+                    let peers: Vec<_> = swarm.behaviour_mut().gossipsub.all_peers().filter_map(|(p, topics)| {
+                        log::info!("{p}, {topics:?}");
+                        (topics.contains(&&volatile) &&
+                            topics.contains(&&persistent) &&
+                                topics.contains(&&config)).then(
+                        ||p.to_owned())
+                    }).collect();
+                    if !peers.is_empty() &&
+                        ev_send.send(Event::Ready(peers)).is_err() {
+                            return swarm;
+                    }
+                }
                 cmd = cmd_recv.recv() => {
-                    log::debug!("command {cmd:?}");
+                    log::trace!("command {cmd:?}");
                     if !cmd.is_some_and(|cmd| handle_command(&mut swarm, cmd)) {
                         log::debug!("Exiting cmd");
                         return swarm
                     }
                 }
                 ev = swarm.select_next_some() => {
+                    log::trace!("event {ev:?}");
                     if handle_swarm_event(&mut swarm, ev, &ev_send).is_err() {
                         log::debug!("Exiting ev");
                         return swarm
@@ -217,10 +246,9 @@ pub(crate) mod test {
     }
 
     pub async fn make_peer(variant: u8) -> Swarm<DomoBehaviour> {
-        let mut a = new_ephemeral(|identity| DomoBehaviour::new(&identity).unwrap(), variant);
-        a.listen().await;
-
-        a
+        let mut swarm = new_ephemeral(|identity| DomoBehaviour::new(&identity).unwrap(), variant);
+        swarm.listen().await;
+        swarm
     }
 
     pub async fn connect_peer(a: &mut Swarm<DomoBehaviour>, b: &mut Swarm<DomoBehaviour>) {
@@ -235,10 +263,15 @@ pub(crate) mod test {
 
     pub async fn make_peers(variant: u8) -> [Swarm<DomoBehaviour>; 3] {
         let _ = env_logger::builder().is_test(true).try_init();
+
         let mut a = new_ephemeral(|identity| DomoBehaviour::new(&identity).unwrap(), variant);
         let mut b = new_ephemeral(|identity| DomoBehaviour::new(&identity).unwrap(), variant);
         let mut c = new_ephemeral(|identity| DomoBehaviour::new(&identity).unwrap(), variant);
-
+        /*
+        let mut a = Swarm::new_ephemeral(|identity| DomoBehaviour::new(&identity).unwrap());
+        let mut b = Swarm::new_ephemeral(|identity| DomoBehaviour::new(&identity).unwrap());
+        let mut c = Swarm::new_ephemeral(|identity| DomoBehaviour::new(&identity).unwrap());
+        */
         for a in a.external_addresses() {
             log::info!("{a:?}");
         }
@@ -251,7 +284,13 @@ pub(crate) mod test {
         b.connect(&mut c).await;
         c.connect(&mut a).await;
 
+        println!("a {}", a.local_peer_id());
+        println!("b {}", b.local_peer_id());
+        println!("c {}", c.local_peer_id());
+
         let peers: Vec<_> = a.connected_peers().cloned().collect();
+
+        log::info!("Peers {peers:#?}");
 
         for peer in peers {
             a.behaviour_mut().gossipsub.add_explicit_peer(&peer);
@@ -280,6 +319,8 @@ pub(crate) mod test {
         let (b_s, br, _) = dht_channel(b);
         let (c_s, cr, _) = dht_channel(c);
 
+        log::info!("Waiting for peers");
+
         // Wait until peers are discovered
         while let Some(ev) = ar.recv().await {
             match ev {
@@ -288,6 +329,9 @@ pub(crate) mod test {
                 Event::Config(cfg) => log::info!("config {cfg}"),
                 Event::Discovered(peers) => {
                     log::info!("found peers: {peers:?}");
+                }
+                Event::Ready(peers) => {
+                    log::info!("ready peers: {peers:?}");
                     break;
                 }
             }
@@ -297,6 +341,7 @@ pub(crate) mod test {
 
         a_s.send(Command::Broadcast(msg.clone())).unwrap();
 
+        log::info!("Sent volatile");
         for r in [br, cr].iter_mut() {
             while let Some(ev) = r.recv().await {
                 match ev {
@@ -310,6 +355,9 @@ pub(crate) mod test {
                     Event::Config(cfg) => log::info!("config {cfg}"),
                     Event::Discovered(peers) => {
                         log::info!("found peers: {peers:?}");
+                    }
+                    Event::Ready(peers) => {
+                        log::info!("peers ready: {peers:?}");
                     }
                 }
             }
