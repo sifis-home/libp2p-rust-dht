@@ -7,16 +7,18 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tokio::sync::{OwnedRwLockReadGuard, RwLock};
+
+enum SqlxCommand {
+    Write(DomoCacheElement),
+}
 
 #[derive(Default)]
 pub(crate) struct InnerCache {
     pub mem: BTreeMap<String, BTreeMap<String, DomoCacheElement>>,
-    pub store: Option<SqlxStorage>,
+    store: Option<UnboundedSender<SqlxCommand>>,
 }
-
-/// SAFETY: the SqlxStorage access is only over write()
-unsafe impl std::marker::Sync for InnerCache {}
 
 impl InnerCache {
     pub fn put(&mut self, elem: &DomoCacheElement) {
@@ -53,7 +55,14 @@ impl LocalCache {
             }
 
             if db_config.persistent {
-                inner.store = Some(store);
+                let (s, mut r) = unbounded_channel();
+
+                tokio::task::spawn(async move {
+                    while let Some(SqlxCommand::Write(elem)) = r.recv().await {
+                        store.store(&elem).await
+                    }
+                });
+                inner.store = Some(s);
             }
         }
 
@@ -83,8 +92,8 @@ impl LocalCache {
     pub async fn put(&self, elem: &DomoCacheElement) {
         let mut cache = self.0.write().await;
 
-        if let Some(storage) = cache.store.as_mut() {
-            storage.store(elem).await;
+        if let Some(s) = cache.store.as_mut() {
+            let _ = s.send(SqlxCommand::Write(elem.to_owned()));
         }
 
         cache.put(elem);
@@ -112,7 +121,7 @@ impl LocalCache {
 
         if e.is_ok() {
             if let Some(s) = cache.store.as_mut() {
-                s.store(elem).await;
+                let _ = s.send(SqlxCommand::Write(elem.to_owned()));
             }
         }
 
@@ -316,5 +325,24 @@ mod test {
                 .unwrap(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn persistence() {
+        let cfg = crate::Config {
+            ..Default::default()
+        };
+
+        let cache = LocalCache::with_config(&cfg).await;
+
+        for item in 0..10 {
+            let elem = make_test_element(
+                "Domo::Light",
+                &format!("luce-{item}"),
+                &json!({ "connected": true, "count": item}),
+            );
+
+            cache.put(&elem).await;
+        }
     }
 }
