@@ -42,7 +42,7 @@ pub enum DomoEvent {
 }
 
 // period at which we send messages containing our cache hash
-const SEND_CACHE_HASH_PERIOD: u8 = 120;
+const SEND_CACHE_HASH_PERIOD: u8 = 5;
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct DomoCacheElement {
@@ -177,6 +177,7 @@ impl DomoCache {
         match ret {
             None => {
                 log::info!("New message received");
+                log::trace!("{m:#?}");
                 // since a new message arrived, we invalidate peers cache states
                 self.peers_caches_state.clear();
                 Ok(DomoEvent::PersistentData(m))
@@ -302,8 +303,11 @@ impl DomoCache {
     }
 
     async fn handle_config_data(&mut self, message: &str) {
-        log::info!("Received cache message, check caches ...");
         let m: DomoCacheStateMessage = serde_json::from_str(message).unwrap();
+        log::info!(
+            "Received cache message from {}, check caches ...",
+            m.peer_id
+        );
         self.peers_caches_state.insert(m.peer_id.clone(), m);
         self.check_caches_desynchronization().await;
     }
@@ -384,22 +388,22 @@ impl DomoCache {
             event = self.swarm.select_next_some() => {
                 match event {
                     SwarmEvent::ExpiredListenAddr { address, .. } => {
-                        log::info!("Address {address:?} expired");
+                        log::debug!("Address {address:?} expired");
                     }
-                    SwarmEvent::ConnectionEstablished {..} => {
-                            log::info!("Connection established ...");
+                    SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, .. } => {
+                            log::debug!("Connection established {peer_id:?}, {connection_id:?}, {endpoint:?}");
                     }
-                    SwarmEvent::ConnectionClosed { .. } => {
-                        log::info!("Connection closed");
+                    SwarmEvent::ConnectionClosed { peer_id, connection_id, endpoint, num_established: _, cause } => {
+                        log::debug!("Connection closed {peer_id:?}, {connection_id:?}, {endpoint:?} -> {cause:?}");
                     }
-                    SwarmEvent::ListenerError { .. } => {
-                        log::info!("Listener Error");
+                    SwarmEvent::ListenerError { listener_id, error } => {
+                        log::warn!("Listener Error {listener_id:?} -> {error:?}");
                     }
-                    SwarmEvent::OutgoingConnectionError { .. } => {
-                        log::info!("Outgoing connection error");
+                    SwarmEvent::OutgoingConnectionError { connection_id, peer_id, error } => {
+                        log::warn!("Outgoing connection error {peer_id:?}, {connection_id:?} -> {error:?}");
                     }
                     SwarmEvent::ListenerClosed { .. } => {
-                        log::info!("Listener Closed");
+                        log::debug!("Listener Closed");
                     }
                     SwarmEvent::NewListenAddr { address, .. } => {
                         println!("Listening in {address:?}");
@@ -412,7 +416,8 @@ impl DomoCache {
                         },
                     )) => {
                         let data = String::from_utf8(message.data).unwrap();
-                        match message.topic.as_str() {
+                        let topic = message.topic.as_str();
+                        match topic {
                             "domo-persistent-data" => {
                                 return PersistentData(data);
                             }
@@ -423,7 +428,7 @@ impl DomoCache {
                                 return VolatileData(data);
                             }
                             _ => {
-                                log::info!("Not able to recognize message");
+                                log::warn!("Not able to recognize message {topic}");
                             }
                         }
                     }
