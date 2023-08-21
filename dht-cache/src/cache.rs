@@ -170,6 +170,11 @@ impl Cache {
             })
             .collect()
     }
+
+    /// Return the current cache hash
+    pub async fn get_hash(&self) -> u64 {
+        self.local.get_hash().await
+    }
 }
 
 #[derive(Default, Debug, Clone)]
