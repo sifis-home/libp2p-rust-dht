@@ -374,6 +374,7 @@ pub fn cache_channel(
 mod test {
     use super::*;
     use crate::dht::test::*;
+    use futures_concurrency::prelude::*;
     use std::{collections::HashSet, pin::pin};
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
@@ -416,9 +417,9 @@ mod test {
         expected_peers.insert(c_c.peer_id.clone());
 
         tokio::task::spawn(async move {
-            let mut a_ev = pin!(a_ev);
-            let mut b_ev = pin!(b_ev);
-            let mut c_ev = pin!(c_ev);
+            let a_ev = pin!(a_ev);
+            let b_ev = pin!(b_ev);
+            let c_ev = pin!(c_ev);
             for uuid in 0..10 {
                 let _ = a_c
                     .put(
@@ -429,13 +430,14 @@ mod test {
                     .await;
             }
 
-            loop {
-                let (node, ev) = tokio::select! {
-                    v = a_ev.next() => ("a", v.unwrap()),
-                    v = b_ev.next() => ("b", v.unwrap()),
-                    v = c_ev.next() => ("c", v.unwrap()),
-                };
+            let mut s = (
+                a_ev.map(|ev| ("a", ev)),
+                b_ev.map(|ev| ("b", ev)),
+                c_ev.map(|ev| ("c", ev)),
+            )
+                .merge();
 
+            while let Some((node, ev)) = s.next().await {
                 match ev {
                     DomoEvent::PersistentData(data) => {
                         log::debug!("{node}: Got data {data:?}");
@@ -449,7 +451,7 @@ mod test {
 
         log::info!("Adding D");
 
-        let (d_c, d_ev) = cache_channel(d_local_cache, d, 1000);
+        let (d_c, d_ev) = cache_channel(d_local_cache, d, 100);
 
         let mut d_ev = pin!(d_ev);
         while !expected.is_empty() {

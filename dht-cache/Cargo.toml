@@ -31,6 +31,7 @@ libsqlite3-sys = "*"
 thiserror = "1.0.43"
 anyhow = "1.0.72"
 tokio-stream = "0.1.14"
+futures-concurrency = "7.4.1"
 
 [dev-dependencies]
 env_logger = "0.10.0"
