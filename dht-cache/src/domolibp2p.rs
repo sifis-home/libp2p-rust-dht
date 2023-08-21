@@ -104,7 +104,6 @@ pub async fn start(
 
         // Set a custom gossipsub
         let gossipsub_config = gossipsub::ConfigBuilder::default()
-            .idle_timeout(Duration::from_secs(10))
             .heartbeat_interval(Duration::from_secs(3)) // This is set to aid debugging by not cluttering the log space
             .check_explicit_peers_ticks(10)
             .validation_mode(ValidationMode::Strict) // This sets the kind of message validation. The default is Strict (enforce message signing)
