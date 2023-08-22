@@ -330,8 +330,8 @@ pub(crate) mod test {
         let [a, b, c] = make_peers(1).await;
 
         let (a_s, mut ar, _) = dht_channel(a);
-        let (b_s, br, _) = dht_channel(b);
-        let (c_s, cr, _) = dht_channel(c);
+        let (_b_s, br, _) = dht_channel(b);
+        let (_c_s, cr, _) = dht_channel(c);
 
         log::info!("Waiting for peers");
 
@@ -376,8 +376,5 @@ pub(crate) mod test {
                 }
             }
         }
-
-        drop(b_s);
-        drop(c_s);
     }
 }
