@@ -104,20 +104,23 @@ fn handle_swarm_event<E>(
                 message,
             },
         )) => {
-            let data = String::from_utf8(message.data).unwrap();
-            match message.topic.as_str() {
-                "domo-persistent-data" => {
-                    ev_send.send(PersistentData(data)).map_err(|_| ())?;
+            if let Ok(data) = String::from_utf8(message.data) {
+                match message.topic.as_str() {
+                    "domo-persistent-data" => {
+                        ev_send.send(PersistentData(data)).map_err(|_| ())?;
+                    }
+                    "domo-config" => {
+                        ev_send.send(Config(data)).map_err(|_| ())?;
+                    }
+                    "domo-volatile-data" => {
+                        ev_send.send(VolatileData(data)).map_err(|_| ())?;
+                    }
+                    _ => {
+                        log::info!("Not able to recognize message");
+                    }
                 }
-                "domo-config" => {
-                    ev_send.send(Config(data)).map_err(|_| ())?;
-                }
-                "domo-volatile-data" => {
-                    ev_send.send(VolatileData(data)).map_err(|_| ())?;
-                }
-                _ => {
-                    log::info!("Not able to recognize message");
-                }
+            } else {
+                log::warn!("The message does not contain utf8 data");
             }
         }
         SwarmEvent::Behaviour(crate::domolibp2p::OutEvent::Gossipsub(
