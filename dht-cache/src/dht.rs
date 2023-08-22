@@ -138,11 +138,11 @@ fn handle_swarm_event<E>(
         SwarmEvent::Behaviour(crate::domolibp2p::OutEvent::Mdns(mdns::Event::Discovered(list))) => {
             let local = OffsetDateTime::now_utc();
             let peers = list
-                .iter()
+                .into_iter()
                 .map(|(peer, _)| {
-                    swarm.behaviour_mut().gossipsub.add_explicit_peer(peer);
+                    swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer);
                     log::info!("Discovered peer {peer} {local:?}");
-                    peer.to_owned()
+                    peer
                 })
                 .collect();
             ev_send.send(Discovered(peers)).map_err(|_| ())?;
