@@ -420,7 +420,7 @@ impl DomoCache {
     /// Cache event loop
     ///
     /// To be called as often as needed to keep the cache in-sync and receive new data.
-    pub async fn cache_event_loop(&mut self) -> std::result::Result<DomoEvent, Error> {
+    pub async fn cache_event_loop(&mut self) -> Result<DomoEvent, Error> {
         use Event::*;
         loop {
             match self.inner_select().await {
