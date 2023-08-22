@@ -169,20 +169,31 @@ pub fn dht_channel(
         let volatile = Topic::new("domo-volatile-data").hash();
         let persistent = Topic::new("domo-persistent-data").hash();
         let config = Topic::new("domo-config").hash();
+
+        // Only peers that subscribed to all the topics are usable
+        let check_peers = |swarm: &mut Swarm<DomoBehaviour>| {
+            swarm
+                .behaviour_mut()
+                .gossipsub
+                .all_peers()
+                .filter_map(|(p, topics)| {
+                    log::info!("{p}, {topics:?}");
+                    (topics.contains(&&volatile)
+                        && topics.contains(&&persistent)
+                        && topics.contains(&&config))
+                    .then(|| p.to_owned())
+                })
+                .collect()
+        };
+
         loop {
             log::trace!("Looping {}", swarm.local_peer_id());
             tokio::select! {
                 // the mdns event is not enough to ensure we can send messages
                 _ = interval.tick() => {
                     log::debug!("{} Checking for peers", swarm.local_peer_id());
-                    let peers: Vec<_> = swarm.behaviour_mut().gossipsub.all_peers().filter_map(|(p, topics)| {
-                        log::info!("{p}, {topics:?}");
-                        (topics.contains(&&volatile) &&
-                            topics.contains(&&persistent) &&
-                                topics.contains(&&config)).then(
-                        ||p.to_owned())
-                    }).collect();
-                    if !peers.is_empty() &&
+                    let peers: Vec<_> = check_peers(&mut swarm);
+                        if !peers.is_empty() &&
                         ev_send.send(Event::Ready(peers)).is_err() {
                             return swarm;
                     }
