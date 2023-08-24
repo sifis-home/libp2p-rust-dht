@@ -222,6 +222,7 @@ pub fn dht_channel(
 
 #[cfg(test)]
 pub(crate) mod test {
+    use std::collections::HashSet;
     use std::time::Duration;
 
     use super::*;
@@ -329,6 +330,9 @@ pub(crate) mod test {
     async fn multiple_peers() {
         let [a, b, c] = make_peers(1).await;
 
+        let mut expected_peers: HashSet<_> =
+            [b.local_peer_id().to_owned(), c.local_peer_id().to_owned()].into();
+
         let (a_s, mut ar, _) = dht_channel(a);
         let (_b_s, br, _) = dht_channel(b);
         let (_c_s, cr, _) = dht_channel(c);
@@ -346,7 +350,13 @@ pub(crate) mod test {
                 }
                 Event::Ready(peers) => {
                     log::info!("ready peers: {peers:?}");
-                    break;
+                    for peer in peers {
+                        expected_peers.remove(&peer);
+                    }
+
+                    if expected_peers.is_empty() {
+                        break;
+                    }
                 }
             }
         }
