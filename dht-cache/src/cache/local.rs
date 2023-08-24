@@ -21,16 +21,18 @@ pub(crate) struct InnerCache {
 }
 
 impl InnerCache {
-    pub fn put(&mut self, elem: &DomoCacheElement) {
-        let topic_name = elem.topic_name.clone();
-        let topic_uuid = &elem.topic_uuid;
+    pub fn put(&mut self, elem: DomoCacheElement) {
+        let topic_name = &elem.topic_name;
+        let topic_uuid = elem.topic_uuid.to_owned();
 
-        self.mem
-            .entry(topic_name)
-            .and_modify(|topic| {
-                topic.insert(topic_uuid.to_owned(), elem.to_owned());
-            })
-            .or_insert_with(|| [(topic_uuid.to_owned(), elem.to_owned())].into());
+        if let Some(topic) = self.mem.get_mut(topic_name) {
+            topic.insert(topic_uuid, elem);
+        } else {
+            self.mem.insert(
+                topic_name.to_owned(),
+                [(topic_uuid.to_owned(), elem)].into(),
+            );
+        }
     }
 }
 
@@ -51,7 +53,7 @@ impl LocalCache {
             let mut store = SqlxStorage::new(db_config).await;
 
             for a in store.get_all_elements().await {
-                inner.put(&a);
+                inner.put(a);
             }
 
             if db_config.persistent {
@@ -61,6 +63,7 @@ impl LocalCache {
                     while let Some(SqlxCommand::Write(elem)) = r.recv().await {
                         store.store(&elem).await
                     }
+                    panic!("I'm out!");
                 });
                 inner.store = Some(s);
             }
@@ -89,7 +92,7 @@ impl LocalCache {
     /// Put the element in the cache
     ///
     /// If it is already present overwrite it
-    pub async fn put(&self, elem: &DomoCacheElement) {
+    pub async fn put(&self, elem: DomoCacheElement) {
         let mut cache = self.0.write().await;
 
         if let Some(s) = cache.store.as_mut() {
@@ -101,8 +104,8 @@ impl LocalCache {
 
     /// Try to insert the element in the cache
     ///
-    /// Return Err(()) if the element to insert is older than the one in the cache
-    pub async fn try_put(&self, elem: &DomoCacheElement) -> Result<(), ()> {
+    /// Return false if the element to insert is older than the one in the cache
+    pub async fn try_put(&self, elem: DomoCacheElement) -> bool {
         let mut cache = self.0.write().await;
         let topic_name = elem.topic_name.clone();
         let topic_uuid = &elem.topic_uuid;
@@ -113,15 +116,15 @@ impl LocalCache {
             .get(topic_uuid)
             .is_some_and(|cur| elem.publication_timestamp <= cur.publication_timestamp)
         {
-            Err(())
+            false
         } else {
-            topic.insert(topic_uuid.to_owned(), elem.to_owned());
-            Ok(())
+            topic.insert(topic_uuid.to_owned(), elem.clone());
+            true
         };
 
-        if e.is_ok() {
+        if e {
             if let Some(s) = cache.store.as_mut() {
-                let _ = s.send(SqlxCommand::Write(elem.to_owned()));
+                let _ = s.send(SqlxCommand::Write(elem));
             }
         }
 
@@ -222,7 +225,7 @@ mod test {
         println!("{hash}");
 
         let elem = make_test_element("Domo::Light", "luce-1", &json!({ "connected": true}));
-        cache.put(&elem).await;
+        cache.put(elem).await;
 
         let hash2 = cache.get_hash().await;
         println!("{hash2}");
@@ -230,7 +233,7 @@ mod test {
         assert_ne!(hash, hash2);
 
         let elem = make_test_element("Domo::Light", "luce-1", &json!({ "connected": false}));
-        cache.put(&elem).await;
+        cache.put(elem).await;
 
         let hash3 = cache.get_hash().await;
         println!("{hash3}");
@@ -238,7 +241,7 @@ mod test {
         assert_ne!(hash2, hash3);
 
         let elem = make_test_element("Domo::Light", "luce-1", &json!({ "connected": true}));
-        cache.put(&elem).await;
+        cache.put(elem).await;
 
         let hash4 = cache.get_hash().await;
         println!("{hash4}");
@@ -252,7 +255,7 @@ mod test {
 
         let elem = make_test_element("Domo::Light", "luce-1", &json!({ "connected": true}));
 
-        cache.put(&elem).await;
+        cache.put(elem.clone()).await;
 
         let out = cache.get("Domo::Light", "luce-1").await.expect("element");
 
@@ -260,7 +263,7 @@ mod test {
 
         let elem2 = make_test_element("Domo::Light", "luce-1", &json!({ "connected": false}));
 
-        cache.put(&elem2).await;
+        cache.put(elem2.clone()).await;
 
         let out = cache.get("Domo::Light", "luce-1").await.expect("element");
 
@@ -273,7 +276,7 @@ mod test {
 
         let mut elem = make_test_element("Domo::Light", "luce-1", &json!({ "connected": true}));
 
-        cache.try_put(&elem).await.unwrap();
+        assert!(cache.try_put(elem.clone()).await);
 
         let out = cache.get("Domo::Light", "luce-1").await.expect("element");
 
@@ -281,7 +284,7 @@ mod test {
 
         elem.publication_timestamp = 1;
 
-        cache.try_put(&elem).await.expect("Update entry");
+        assert!(cache.try_put(elem.clone()).await);
 
         let out: DomoCacheElement = cache.get("Domo::Light", "luce-1").await.expect("element");
 
@@ -289,10 +292,7 @@ mod test {
 
         elem.publication_timestamp = 0;
 
-        cache
-            .try_put(&elem)
-            .await
-            .expect_err("The update should fail");
+        assert!(!cache.try_put(elem).await);
 
         let out: DomoCacheElement = cache.get("Domo::Light", "luce-1").await.expect("element");
 
@@ -310,7 +310,7 @@ mod test {
                 &json!({ "connected": true, "count": item}),
             );
 
-            cache.put(&elem).await;
+            cache.put(elem).await;
         }
 
         let q = cache.query("Domo::Light");
@@ -342,7 +342,7 @@ mod test {
                 &json!({ "connected": true, "count": item}),
             );
 
-            cache.put(&elem).await;
+            cache.put(elem).await;
         }
     }
 }

@@ -139,11 +139,11 @@ impl Cache {
             ..Default::default()
         };
 
-        self.local.put(&elem).await;
-
         self.cmd
             .send(Command::Publish(serde_json::to_value(&elem)?))
             .map_err(|_| Error::Channel)?;
+
+        self.local.put(elem).await;
 
         Ok(())
     }
@@ -166,11 +166,11 @@ impl Cache {
             ..Default::default()
         };
 
-        self.local.put(&elem).await;
-
         self.cmd
             .send(Command::Publish(serde_json::to_value(&elem)?))
             .map_err(|_| Error::Channel)?;
+
+        self.local.put(elem).await;
 
         Ok(())
     }
@@ -369,10 +369,10 @@ pub fn cache_channel(
                         // TODO: do something with this value instead
                         elem.republication_timestamp = 0;
                         local_write
-                            .try_put(&elem)
+                            .try_put(elem.clone())
                             .await
-                            .ok()
-                            .map(|_| Event::PersistentData(elem))
+                            .then_some(
+                                Event::PersistentData(elem))
                     } else {
                         None
                     }
