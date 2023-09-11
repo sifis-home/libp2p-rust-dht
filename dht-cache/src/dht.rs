@@ -1,6 +1,7 @@
 //! DHT Abstraction
 //!
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use crate::domolibp2p::{DomoBehaviour, OutEvent};
@@ -28,7 +29,7 @@ pub enum Event {
     VolatileData(String),
     Config(String),
     Discovered(Vec<PeerId>),
-    Ready(Vec<PeerId>),
+    Ready(HashSet<PeerId>),
 }
 
 fn handle_command(swarm: &mut Swarm<DomoBehaviour>, cmd: Command) -> bool {
@@ -169,7 +170,7 @@ pub fn dht_channel(
         let volatile = Topic::new("domo-volatile-data").hash();
         let persistent = Topic::new("domo-persistent-data").hash();
         let config = Topic::new("domo-config").hash();
-
+        let mut ready_peers = HashSet::new();
         // Only peers that subscribed to all the topics are usable
         let check_peers = |swarm: &mut Swarm<DomoBehaviour>| {
             swarm
@@ -177,7 +178,7 @@ pub fn dht_channel(
                 .gossipsub
                 .all_peers()
                 .filter_map(|(p, topics)| {
-                    log::info!("{p}, {topics:?}");
+                    log::debug!("{p}, {topics:?}");
                     (topics.contains(&&volatile)
                         && topics.contains(&&persistent)
                         && topics.contains(&&config))
@@ -192,10 +193,12 @@ pub fn dht_channel(
                 // the mdns event is not enough to ensure we can send messages
                 _ = interval.tick() => {
                     log::debug!("{} Checking for peers", swarm.local_peer_id());
-                    let peers: Vec<_> = check_peers(&mut swarm);
-                        if !peers.is_empty() &&
-                        ev_send.send(Event::Ready(peers)).is_err() {
+                    let peers: HashSet<_> = check_peers(&mut swarm);
+                    if !peers.is_empty() && ready_peers != peers {
+                        ready_peers = peers.clone();
+                        if ev_send.send(Event::Ready(peers)).is_err() {
                             return swarm;
+                        }
                     }
                 }
                 cmd = cmd_recv.recv() => {
