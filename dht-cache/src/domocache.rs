@@ -406,7 +406,7 @@ impl DomoCache {
                         log::debug!("Listener Closed");
                     }
                     SwarmEvent::NewListenAddr { address, .. } => {
-                        println!("Listening in {address:?}");
+                        log::info!("Listening in {address:?}");
                     }
                     SwarmEvent::Behaviour(crate::domolibp2p::OutEvent::Gossipsub(
                         libp2p::gossipsub::Event::Message {
