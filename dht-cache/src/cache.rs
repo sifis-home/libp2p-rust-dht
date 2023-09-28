@@ -21,7 +21,8 @@ use crate::{
     utils, Error,
 };
 
-use self::local::{DomoCacheElement, LocalCache, Query};
+use self::local::DomoCacheElement;
+pub use self::local::{LocalCache, Query};
 
 /// DHT state change
 #[derive(Debug)]
