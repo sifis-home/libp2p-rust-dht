@@ -22,7 +22,7 @@ use crate::{
 };
 
 use self::local::DomoCacheElement;
-pub use self::local::{LocalCache, Query};
+pub use self::local::{LocalCache, Query, QueryGet, QueryGetIter};
 
 /// DHT state change
 #[derive(Debug)]
@@ -177,7 +177,8 @@ impl Cache {
     }
 
     /// Query the local cache
-    pub fn query(&self, topic: &str) -> Query {
+    #[must_use]
+    pub fn query<'a>(&'a self, topic: &'a str) -> Query<'a> {
         self.local.query(topic)
     }
 
