@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::{marker::PhantomData, path::Path, path::PathBuf};
 
-#[derive(Parser, Debug, Deserialize, Serialize)]
+#[derive(Parser, Debug, Deserialize, Serialize, Clone)]
 pub struct Cache {
     /// Database URL in sqlx format
     ///
