@@ -90,6 +90,7 @@ impl Builder {
 /// Cached DHT
 ///
 /// It keeps a local cache of the dht state and allow to query the persistent topics
+#[derive(Clone)]
 pub struct Cache {
     peer_id: String,
     local: LocalCache,
