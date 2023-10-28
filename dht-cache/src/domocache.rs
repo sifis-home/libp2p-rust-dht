@@ -180,7 +180,7 @@ impl DomoCache {
                 log::info!("New message received");
                 log::trace!("{m:#?}");
                 // since a new message arrived, we invalidate peers cache states
-                self.peers_caches_state.clear();
+                //self.peers_caches_state.clear();
                 Ok(DomoEvent::PersistentData(m))
             }
             _ => {
@@ -311,20 +311,26 @@ impl DomoCache {
             m.peer_id
         );
 
-        let ret = self.peers_caches_state.insert(m.peer_id.clone(), m);
+        println!("INSERTING {}", m.peer_id);
 
-        // we republish the cache only if new nodes joined the network
-        match ret {
-            None => {
-                self.check_caches_desynchronization().await;
-            },
-            Some(old) => {
-                log::info!("NOW {} OLD {}", get_epoch_ms(), old.publication_timestamp);
-                if old.publication_timestamp < (get_epoch_ms() -  2 * 1000 * u128::from(SEND_CACHE_HASH_PERIOD) ) {
-                    self.check_caches_desynchronization().await;
-                }
+        let mut need_check = false;
+
+        println!("{:?}", self.peers_caches_state);
+
+        if let Some(old) = self.peers_caches_state.get(&m.peer_id) {
+            log::info!("NOW {} OLD {}", get_epoch_ms(), old.publication_timestamp);
+            if old.publication_timestamp < (get_epoch_ms() -  2 * 1000 * u128::from(SEND_CACHE_HASH_PERIOD) ) {
+                need_check = true;
             }
+        } else {
+            need_check = true;
         }
+
+        self.peers_caches_state.insert(m.peer_id.clone(), m);
+        if need_check {
+            self.check_caches_desynchronization().await;
+        }
+
     }
 
     async fn check_caches_desynchronization(&mut self) {
