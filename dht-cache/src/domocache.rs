@@ -341,7 +341,12 @@ impl DomoCache {
             log::info!("Caches are not synchronized");
             if leader {
                 log::info!("Publishing my cache since I am the leader for the hash");
+                if self.last_cache_repub_timestamp
+                    < (utils::get_epoch_ms() - 1000 * u128::from(SEND_CACHE_HASH_PERIOD))
+                {
                     self.publish_cache().await;
+                }
+
             } else {
                 log::info!("I am not the leader for the hash");
             }
