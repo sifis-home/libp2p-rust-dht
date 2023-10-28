@@ -2,7 +2,7 @@ name: cross
 
 on:
   push:
-    branches: [ "master", "sqlx"]
+    branches: [ "master", "sqlx", "sync-new-nodes"]
     tags:
       - 'v*.*.*'
 
@@ -35,13 +35,13 @@ jobs:
       uses: docker/build-push-action@v4
       with:
         push: true
-        tags: ghcr.io/sifis-home/sifis-alpine-dht-amd64:latest
+        tags: ghcr.io/${{ github.repository_owner }}/sifis-alpine-dht-amd64-${{ github.head_ref || github.ref_name }}:${{github.run_number}}
         context: target/x86_64-unknown-linux-musl/release
         file: docker/Dockerfile-amd64
     - name: Build and push arm64v8
       uses: docker/build-push-action@v4
       with:
         push: true
-        tags: ghcr.io/sifis-home/sifis-alpine-dht-arm64v8:latest
+        tags: ghcr.io/${{ github.repository_owner }}/sifis-alpine-dht-arm64v8-${{ github.head_ref || github.ref_name }}:${{github.run_number}}
         context: target/aarch64-unknown-linux-musl/release
         file: docker/Dockerfile-OpenWrt

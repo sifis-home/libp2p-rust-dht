@@ -19,6 +19,7 @@ use std::time::Duration;
 use time::OffsetDateTime;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
+use crate::utils::get_epoch_ms;
 
 fn generate_rsa_key() -> (Vec<u8>, Vec<u8>) {
     let mut rng = rand::thread_rng();
@@ -42,7 +43,7 @@ pub enum DomoEvent {
 }
 
 // period at which we send messages containing our cache hash
-const SEND_CACHE_HASH_PERIOD: u8 = 120;
+const SEND_CACHE_HASH_PERIOD: u8 = 10;
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct DomoCacheElement {
@@ -300,6 +301,7 @@ impl DomoCache {
         }
 
         self.last_cache_repub_timestamp = utils::get_epoch_ms();
+        log::info!("Republished my cache");
     }
 
     async fn handle_config_data(&mut self, message: &str) {
@@ -308,24 +310,32 @@ impl DomoCache {
             "Received cache message from {}, check caches ...",
             m.peer_id
         );
-        self.peers_caches_state.insert(m.peer_id.clone(), m);
-        self.check_caches_desynchronization().await;
+
+        let ret = self.peers_caches_state.insert(m.peer_id.clone(), m);
+
+        // we republish the cache only if new nodes joined the network
+        match ret {
+            None => {
+                self.check_caches_desynchronization().await;
+            },
+            Some(old) => {
+                log::info!("NOW {} OLD {}", get_epoch_ms(), old.publication_timestamp);
+                if old.publication_timestamp < (get_epoch_ms() -  2 * 1000 * u128::from(SEND_CACHE_HASH_PERIOD) ) {
+                    self.check_caches_desynchronization().await;
+                }
+            }
+        }
     }
 
     async fn check_caches_desynchronization(&mut self) {
+        log::info!("CHECK CACHE DESYNC SINCE NEW NODE JOINED THE NET");
         let local_hash = self.get_cache_hash();
         let (sync, leader) = self.is_synchronized(local_hash, &self.peers_caches_state);
         if !sync {
             log::info!("Caches are not synchronized");
             if leader {
                 log::info!("Publishing my cache since I am the leader for the hash");
-                if self.last_cache_repub_timestamp
-                    < (utils::get_epoch_ms() - 1000 * u128::from(SEND_CACHE_HASH_PERIOD))
-                {
                     self.publish_cache().await;
-                } else {
-                    log::info!("Skipping cache repub since it occurred not so much time ago");
-                }
             } else {
                 log::info!("I am not the leader for the hash");
             }
@@ -356,11 +366,11 @@ impl DomoCache {
             log::info!("Published cache hash");
         }
 
-        self.publish_cache_counter -= 1;
-        if self.publish_cache_counter == 0 {
-            self.publish_cache_counter = 4;
-            self.check_caches_desynchronization().await;
-        }
+        // self.publish_cache_counter -= 1;
+        // if self.publish_cache_counter == 0 {
+        //     self.publish_cache_counter = 4;
+        //     self.check_caches_desynchronization().await;
+        // }
     }
 
     pub fn print_peers_cache(&self) {
