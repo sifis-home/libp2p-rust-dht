@@ -80,6 +80,7 @@ impl Display for DomoCacheElement {
     }
 }
 
+
 pub struct DomoCache {
     storage: SqlxStorage,
     pub cache: BTreeMap<String, BTreeMap<String, DomoCacheElement>>,
@@ -92,6 +93,7 @@ pub struct DomoCache {
     client_tx_channel: Sender<DomoEvent>,
     client_rx_channel: Receiver<DomoEvent>,
     send_cache_state_timer: tokio::time::Instant,
+    loopback_peers_only: bool
 }
 
 enum Event {
@@ -311,14 +313,10 @@ impl DomoCache {
             m.peer_id
         );
 
-        println!("INSERTING {}", m.peer_id);
-
         let mut need_check = false;
 
-        println!("{:?}", self.peers_caches_state);
-
         if let Some(old) = self.peers_caches_state.get(&m.peer_id) {
-            log::info!("NOW {} OLD {}", get_epoch_ms(), old.publication_timestamp);
+
             if old.publication_timestamp < (get_epoch_ms() -  2 * 1000 * u128::from(SEND_CACHE_HASH_PERIOD) ) {
                 need_check = true;
             }
@@ -412,19 +410,19 @@ impl DomoCache {
                         log::debug!("Address {address:?} expired");
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, .. } => {
-                            log::debug!("Connection established {peer_id:?}, {connection_id:?}, {endpoint:?}");
+                            log::info!("Connection established {peer_id:?}, {connection_id:?}, {endpoint:?}");
                     }
                     SwarmEvent::ConnectionClosed { peer_id, connection_id, endpoint, num_established: _, cause } => {
-                        log::debug!("Connection closed {peer_id:?}, {connection_id:?}, {endpoint:?} -> {cause:?}");
+                        log::info!("Connection closed {peer_id:?}, {connection_id:?}, {endpoint:?} -> {cause:?}");
                     }
                     SwarmEvent::ListenerError { listener_id, error } => {
                         log::warn!("Listener Error {listener_id:?} -> {error:?}");
                     }
                     SwarmEvent::OutgoingConnectionError { connection_id, peer_id, error } => {
-                        log::warn!("Outgoing connection error {peer_id:?}, {connection_id:?} -> {error:?}");
+                        log::info!("Outgoing connection error {peer_id:?}, {connection_id:?} -> {error:?}");
                     }
                     SwarmEvent::ListenerClosed { .. } => {
-                        log::debug!("Listener Closed");
+                        log::info!("Listener Closed");
                     }
                     SwarmEvent::NewListenAddr { address, .. } => {
                         log::info!("Listening in {address:?}");
@@ -466,7 +464,13 @@ impl DomoCache {
                         mdns::Event::Discovered(list),
                     )) => {
                         let local = OffsetDateTime::now_utc();
-                        for (peer, _) in list {
+                        for (peer, multiaddr) in list {
+                            log::info!("{}", multiaddr);
+                            let is_local_peer = utils::is_local_peer(&multiaddr.to_string());
+                            if self.loopback_peers_only && !is_local_peer {
+                                log::info!("Skipping peer since it is not local");
+                                continue;
+                            }
                             self.swarm
                                 .behaviour_mut()
                                 .gossipsub
@@ -565,6 +569,7 @@ impl DomoCache {
             client_tx_channel,
             client_rx_channel,
             send_cache_state_timer,
+            loopback_peers_only: loopback_only
         };
 
         // Populate the cache with the sqlite contents

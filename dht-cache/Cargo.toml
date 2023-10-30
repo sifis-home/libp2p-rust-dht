@@ -28,7 +28,7 @@ pem-rfc7468 = { version = "0.7", features = ["alloc"] }
 sifis-config = { path = "../dht-config" }
 openssl-sys = "*"
 libsqlite3-sys = "*"
-
+local-ip-address = "0.4.9"
 
 [package.metadata.cargo-udeps.ignore]
 normal = ["openssl-sys", "libsqlite3-sys", "libc"]

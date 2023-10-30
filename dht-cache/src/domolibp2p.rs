@@ -90,7 +90,7 @@ pub async fn start(
         let mdnsconf = mdns::Config {
             ttl: Duration::from_secs(600),
             query_interval: Duration::from_secs(30),
-            enable_ipv6: false,
+            enable_ipv6: false
         };
 
         let mdns = mdns::tokio::Behaviour::new(mdnsconf, local_peer_id)?;
@@ -134,13 +134,8 @@ pub async fn start(
         SwarmBuilder::with_tokio_executor(transport, behaviour, local_peer_id).build()
     };
 
-    if !loopback_only {
-        // Listen on all interfaces and whatever port the OS assigns.
-        swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
-    } else {
-        // Listen only on loopack interface
-        swarm.listen_on("/ip4/127.0.0.1/tcp/0".parse()?)?;
-    }
+    // Listen on all interfaces and whatever port the OS assigns.
+    swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
     Ok(swarm)
 }
