@@ -135,7 +135,11 @@ pub async fn start(
     };
 
     // Listen on all interfaces and whatever port the OS assigns.
-    swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+    if !loopback_only {
+        swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+    } else {
+        swarm.listen_on("/ip4/127.0.0.1/tcp/0".parse()?)?;
+    }
 
     Ok(swarm)
 }
