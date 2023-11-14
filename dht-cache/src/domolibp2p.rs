@@ -22,8 +22,8 @@ use libp2p::Transport;
 
 use libp2p::{identity, mdns, swarm::NetworkBehaviour, PeerId, Swarm};
 
-use libp2p::swarm::SwarmBuilder;
 use std::error::Error;
+use std::io;
 use std::time::Duration;
 
 const KEY_SIZE: usize = 32;
@@ -75,64 +75,72 @@ pub async fn start(
 ) -> Result<Swarm<DomoBehaviour>, Box<dyn Error>> {
     let local_peer_id = PeerId::from(local_key_pair.public());
 
-    // Create a Gossipsub topic
-    let topic_persistent_data = Topic::new("domo-persistent-data");
-    let topic_volatile_data = Topic::new("domo-volatile-data");
-    let topic_config = Topic::new("domo-config");
+
 
     let arr = parse_hex_key(&shared_key)?;
     let psk = PreSharedKey::new(arr);
 
-    let transport = build_transport(local_key_pair.clone(), psk);
 
-    // Create a swarm to manage peers and events.
-    let mut swarm = {
-        let mdnsconf = mdns::Config {
-            ttl: Duration::from_secs(600),
-            query_interval: Duration::from_secs(30),
-            enable_ipv6: false
-        };
+    let mut swarm = libp2p::SwarmBuilder::with_existing_identity(local_key_pair)
+        .with_tokio()
+        .with_other_transport(|key| {
+            let noise_config = noise::Config::new(key).unwrap();
+            let yamux_config = yamux::Config::default();
 
-        let mdns = mdns::tokio::Behaviour::new(mdnsconf, local_peer_id)?;
+            let base_transport = tcp::tokio::Transport::new(tcp::Config::default().nodelay(true));
+            let maybe_encrypted = base_transport.and_then(move |socket, _| PnetConfig::new(psk).handshake(socket));
+            maybe_encrypted
+                .upgrade(Version::V1Lazy)
+                .authenticate(noise_config)
+                .multiplex(yamux_config)
+        })?
+        .with_behaviour(|key| {
 
-        // To content-address message, we can take the hash of message and use it as an ID.
-        let message_id_fn = |message: &gossipsub::Message| {
-            let mut s = DefaultHasher::new();
-            message.data.hash(&mut s);
-            MessageId::from(s.finish().to_string())
-        };
+            let mdnsconf = mdns::Config {
+                ttl: Duration::from_secs(600),
+                query_interval: Duration::from_secs(30),
+                enable_ipv6: false
+            };
 
-        // Set a custom gossipsub
-        let gossipsub_config = gossipsub::ConfigBuilder::default()
-            .heartbeat_interval(Duration::from_secs(3)) // This is set to aid debugging by not cluttering the log space
-            .check_explicit_peers_ticks(10)
-            .validation_mode(ValidationMode::Strict) // This sets the kind of message validation. The default is Strict (enforce message signing)
-            .message_id_fn(message_id_fn) // content-address messages. No two messages of the
-            // same content will be propagated.
-            .build()
-            .expect("Valid config");
+            let mdns = mdns::tokio::Behaviour::new(mdnsconf, local_peer_id)?;
 
-        // build a gossipsub network behaviour
-        let mut gossipsub = gossipsub::Behaviour::new(
-            MessageAuthenticity::Signed(local_key_pair),
-            gossipsub_config,
-        )
-        .expect("Correct configuration");
+            // To content-address message, we can take the hash of message and use it as an ID.
+            let message_id_fn = |message: &gossipsub::Message| {
+                let mut s = DefaultHasher::new();
+                message.data.hash(&mut s);
+                MessageId::from(s.finish().to_string())
+            };
 
-        // subscribes to persistent data topic
-        gossipsub.subscribe(&topic_persistent_data).unwrap();
+            let gossipsub_config = gossipsub::ConfigBuilder::default()
+                .heartbeat_interval(Duration::from_secs(10)) // This is set to aid debugging by not cluttering the log space
+                .validation_mode(gossipsub::ValidationMode::Strict) // This sets the kind of message validation. The default is Strict (enforce message signing)
+                .message_id_fn(message_id_fn) // content-address messages. No two messages of the same content will be propagated.
+                .build()
+                .map_err(|msg| io::Error::new(io::ErrorKind::Other, msg))?; // Temporary hack because `build` does not return a proper `std::error::Error`.
 
-        // subscribes to volatile data topic
-        gossipsub.subscribe(&topic_volatile_data).unwrap();
+            // build a gossipsub network behaviour
+            let gossipsub = gossipsub::Behaviour::new(
+                gossipsub::MessageAuthenticity::Signed(key.clone()),
+                gossipsub_config,
+            )?;
 
-        // subscribes to config topic
-        gossipsub.subscribe(&topic_config).unwrap();
+            let behaviour = DomoBehaviour { mdns, gossipsub };
 
-        let behaviour = DomoBehaviour { mdns, gossipsub };
-        //Swarm::new(transport, behaviour, local_peer_id)
+            Ok(behaviour)
 
-        SwarmBuilder::with_tokio_executor(transport, behaviour, local_peer_id).build()
-    };
+        })?
+        .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
+        .build();
+
+
+    // Create a Gossipsub topic
+    let topic_persistent_data = gossipsub::IdentTopic::new("domo-persistent-data");
+    let topic_volatile_data = gossipsub::IdentTopic::new("domo-volatile-data");
+    let topic_config = gossipsub::IdentTopic::new("domo-config");
+
+    swarm.behaviour_mut().gossipsub.subscribe(&topic_persistent_data)?;
+    swarm.behaviour_mut().gossipsub.subscribe(&topic_volatile_data)?;
+    swarm.behaviour_mut().gossipsub.subscribe(&topic_config)?;
 
     // Listen on all interfaces and whatever port the OS assigns.
     if !loopback_only {
@@ -148,7 +156,7 @@ pub async fn start(
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "OutEvent")]
 pub struct DomoBehaviour {
-    pub mdns: libp2p::mdns::tokio::Behaviour,
+    pub mdns: mdns::tokio::Behaviour,
     pub gossipsub: gossipsub::Behaviour,
 }
 
