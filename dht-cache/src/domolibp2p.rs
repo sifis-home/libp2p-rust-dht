@@ -97,7 +97,7 @@ pub async fn start(
         .with_behaviour(|key| {
 
             let mdnsconf = mdns::Config {
-                ttl: Duration::from_secs(600),
+                ttl: Duration::from_secs(30),
                 query_interval: Duration::from_secs(30),
                 enable_ipv6: false
             };
