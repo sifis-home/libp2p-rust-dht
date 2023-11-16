@@ -43,7 +43,7 @@ pub enum DomoEvent {
 }
 
 // period at which we send messages containing our cache hash
-const SEND_CACHE_HASH_PERIOD: u8 = 10;
+pub const SEND_CACHE_HASH_PERIOD: u8 = 10;
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct DomoCacheElement {
@@ -186,7 +186,7 @@ impl DomoCache {
                 Ok(DomoEvent::PersistentData(m))
             }
             _ => {
-                log::info!("Old message received");
+                //log::info!("Old message received");
                 Ok(DomoEvent::None)
             }
         }
@@ -308,7 +308,7 @@ impl DomoCache {
 
     async fn handle_config_data(&mut self, message: &str) {
         let m: DomoCacheStateMessage = serde_json::from_str(message).unwrap();
-        log::info!(
+        println!(
             "Received cache message from {}, check caches ...",
             m.peer_id
         );
@@ -316,7 +316,6 @@ impl DomoCache {
         let mut need_check = false;
 
         if let Some(old) = self.peers_caches_state.get(&m.peer_id) {
-
             if old.publication_timestamp < (get_epoch_ms() -  2 * 1000 * u128::from(SEND_CACHE_HASH_PERIOD) ) {
                 need_check = true;
             }
@@ -332,7 +331,7 @@ impl DomoCache {
     }
 
     async fn check_caches_desynchronization(&mut self) {
-        log::info!("CHECK CACHE DESYNC SINCE NEW NODE JOINED THE NET");
+        println!("CHECK CACHE DESYNC SINCE NEW NODE JOINED THE NET");
         let local_hash = self.get_cache_hash();
         let (sync, leader) = self.is_synchronized(local_hash, &self.peers_caches_state);
         if !sync {
@@ -410,7 +409,11 @@ impl DomoCache {
                         log::debug!("Address {address:?} expired");
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, .. } => {
-                            log::info!("Connection established {peer_id:?}, {connection_id:?}, {endpoint:?}");
+                            println!("Connection established {peer_id:?}, {connection_id:?}, {endpoint:?}");
+                            self.swarm
+                                  .behaviour_mut()
+                                  .gossipsub
+                                  .add_explicit_peer(&peer_id);
                     }
                     SwarmEvent::ConnectionClosed { peer_id, connection_id, endpoint, num_established: _, cause } => {
                         log::info!("Connection closed {peer_id:?}, {connection_id:?}, {endpoint:?} -> {cause:?}");
@@ -425,7 +428,7 @@ impl DomoCache {
                         log::info!("Listener Closed");
                     }
                     SwarmEvent::NewListenAddr { address, .. } => {
-                        log::info!("Listening in {address:?}");
+                        println!("Listening in {address:?}");
                     }
                     SwarmEvent::Behaviour(crate::domolibp2p::OutEvent::Gossipsub(
                         libp2p::gossipsub::Event::Message {
@@ -465,6 +468,7 @@ impl DomoCache {
                     )) => {
                         let local = OffsetDateTime::now_utc();
                         for (peer, multiaddr) in list {
+                            println!("Discovered peer {peer} {multiaddr}");
                             log::info!("{}", multiaddr);
                             let is_local_peer = utils::is_local_peer(&multiaddr.to_string());
                             if self.loopback_peers_only && !is_local_peer {
@@ -472,10 +476,10 @@ impl DomoCache {
                                 continue;
                             }
                             self.swarm
-                                .behaviour_mut()
-                                .gossipsub
-                                .add_explicit_peer(&peer);
-                            log::info!("Discovered peer {peer} {local:?}");
+                                 .behaviour_mut()
+                                 .gossipsub
+                                 .add_explicit_peer(&peer);
+
                         }
 
                     }

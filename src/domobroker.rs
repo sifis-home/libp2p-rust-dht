@@ -260,7 +260,7 @@ impl DomoBroker {
                         deleted: m.deleted,
                     },
                 );
-                println!("SENT DATA ON WS {}", get_epoch_ms());
+                //println!("SENT DATA ON WS {}", get_epoch_ms());
                 DomoEvent::PersistentData(m2)
             }
             Ok(DomoEvent::VolatileData(m)) => {

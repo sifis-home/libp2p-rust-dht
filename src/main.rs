@@ -54,16 +54,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn report_event(m: &DomoEvent) {
-    println!("Domo Event received");
+    //println!("Domo Event received");
     match m {
         DomoEvent::None => {
-            println!("None {:?}", m);
+            //println!("None {:?}", m);
         }
         DomoEvent::VolatileData(_v) => {
-            println!("Volatile");
+            //println!("Volatile");
         }
         DomoEvent::PersistentData(_v) => {
-            println!("Persistent");
+            //println!("Persistent");
         }
     }
 }

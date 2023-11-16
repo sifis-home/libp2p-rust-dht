@@ -129,7 +129,7 @@ pub async fn start(
             Ok(behaviour)
 
         })?
-        .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
+        .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(2 * crate::domocache::SEND_CACHE_HASH_PERIOD as u64)))
         .build();
 
 
