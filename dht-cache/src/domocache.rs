@@ -410,13 +410,13 @@ impl DomoCache {
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, .. } => {
                             println!("Connection established {peer_id:?}, {connection_id:?}, {endpoint:?}");
-                            self.swarm
-                                  .behaviour_mut()
-                                  .gossipsub
-                                  .add_explicit_peer(&peer_id);
+                            // self.swarm
+                            //       .behaviour_mut()
+                            //       .gossipsub
+                            //       .add_explicit_peer(&peer_id);
                     }
                     SwarmEvent::ConnectionClosed { peer_id, connection_id, endpoint, num_established: _, cause } => {
-                        log::info!("Connection closed {peer_id:?}, {connection_id:?}, {endpoint:?} -> {cause:?}");
+                        println!("Connection closed {peer_id:?}, {connection_id:?}, {endpoint:?} -> {cause:?}");
                     }
                     SwarmEvent::ListenerError { listener_id, error } => {
                         log::warn!("Listener Error {listener_id:?} -> {error:?}");
@@ -460,7 +460,8 @@ impl DomoCache {
                         let local = OffsetDateTime::now_utc();
 
                         for (peer, _) in list {
-                            log::info!("MDNS for peer {peer} expired {local:?}");
+                            println!("MDNS for peer {peer} expired {local:?}");
+                            self.swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer);
                         }
                     }
                     SwarmEvent::Behaviour(crate::domolibp2p::OutEvent::Mdns(
