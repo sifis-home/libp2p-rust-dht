@@ -72,6 +72,7 @@ pub async fn start(
     shared_key: String,
     local_key_pair: identity::Keypair,
     loopback_only: bool,
+    listen_addr: String
 ) -> Result<Swarm<DomoBehaviour>, Box<dyn Error>> {
     let local_peer_id = PeerId::from(local_key_pair.public());
 
@@ -144,9 +145,10 @@ pub async fn start(
 
     // Listen on all interfaces and whatever port the OS assigns.
     if !loopback_only {
-        swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+        swarm.listen_on(listen_addr.parse()?)?;
     } else {
         swarm.listen_on("/ip4/127.0.0.1/tcp/0".parse()?)?;
+
     }
 
     Ok(swarm)

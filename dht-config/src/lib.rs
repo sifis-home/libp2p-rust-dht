@@ -43,6 +43,10 @@ pub struct Cache {
     /// Use only loopback iface for libp2p
     #[arg(long)]
     pub loopback: bool,
+
+    /// Listen Address
+    #[arg(long, short, default_value = "/ip4/0.0.0.0/tcp/0")]
+    pub listen_addr: String
 }
 
 impl Default for Cache {
@@ -54,6 +58,7 @@ impl Default for Cache {
             private_key: None,
             shared_key: "".to_string(),
             loopback: false,
+            listen_addr: "/ip4/0.0.0.0/tcp/0".to_string()
         }
     }
 }

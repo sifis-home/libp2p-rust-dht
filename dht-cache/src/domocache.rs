@@ -405,8 +405,9 @@ impl DomoCache {
 
             event = self.swarm.select_next_some() => {
                 match event {
-                    SwarmEvent::ExpiredListenAddr { address, .. } => {
-                        log::debug!("Address {address:?} expired");
+                    SwarmEvent::ExpiredListenAddr { listener_id, address, .. } => {
+                        println!("Address {address:?} expired");
+                        self.swarm.remove_listener(listener_id);
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, .. } => {
                             println!("Connection established {peer_id:?}, {connection_id:?}, {endpoint:?}");
@@ -422,10 +423,10 @@ impl DomoCache {
                         log::warn!("Listener Error {listener_id:?} -> {error:?}");
                     }
                     SwarmEvent::OutgoingConnectionError { connection_id, peer_id, error } => {
-                        log::info!("Outgoing connection error {peer_id:?}, {connection_id:?} -> {error:?}");
+                        println!("Outgoing connection error {peer_id:?}, {connection_id:?} -> {error:?}");
                     }
                     SwarmEvent::ListenerClosed { .. } => {
-                        log::info!("Listener Closed");
+                        println!("Listener Closed");
                     }
                     SwarmEvent::NewListenAddr { address, .. } => {
                         println!("Listening in {address:?}");
@@ -525,7 +526,7 @@ impl DomoCache {
         let loopback_only = conf.loopback;
         let shared_key = conf.shared_key.clone();
         let private_key_file = conf.private_key.clone();
-
+        let listen_addr =  conf.listen_addr.clone();
         let storage = SqlxStorage::new(&conf).await;
 
         // Create a random local key.
@@ -551,7 +552,7 @@ impl DomoCache {
         let local_key_pair = Keypair::rsa_from_pkcs8(&mut pkcs8_der)
             .map_err(|e| format!("Couldn't load key: {e:?}"))?;
 
-        let swarm = crate::domolibp2p::start(shared_key, local_key_pair, loopback_only)
+        let swarm = crate::domolibp2p::start(shared_key, local_key_pair, loopback_only, listen_addr)
             .await
             .unwrap();
 
