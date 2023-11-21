@@ -20,7 +20,7 @@ use time::OffsetDateTime;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use crate::utils::get_epoch_ms;
-
+use std::str::FromStr;
 fn generate_rsa_key() -> (Vec<u8>, Vec<u8>) {
     let mut rng = rand::thread_rng();
     let bits = 2048;
@@ -419,7 +419,7 @@ impl DomoCache {
                         println!("Connection closed {peer_id:?}, {connection_id:?}, {endpoint:?} -> {cause:?}");
                     }
                     SwarmEvent::ListenerError { listener_id, error } => {
-                        log::warn!("Listener Error {listener_id:?} -> {error:?}");
+                        println!("Listener Error {listener_id:?} -> {error:?}");
                     }
                     SwarmEvent::OutgoingConnectionError { connection_id, peer_id, error } => {
                         println!("Outgoing connection error {peer_id:?}, {connection_id:?} -> {error:?}");
@@ -429,6 +429,15 @@ impl DomoCache {
                     }
                     SwarmEvent::NewListenAddr { address, .. } => {
                         println!("Listening in {address:?}");
+/*                        if address.to_string().contains("10.44.89") {
+                            if let Ok(wg_server_addr) = libp2p::Multiaddr::from_str("/ip4/10.44.89.1/tcp/4489") {
+                                if let Ok(ret) = self.swarm.dial(wg_server_addr) {
+                                    println!("CONNECTED TO WG_SERVER");
+                                } else {
+                                    println!("CONNECTION TO WG_SERVER FAILED");
+                                }
+                            }
+                        }*/
                     }
                     SwarmEvent::Behaviour(crate::domolibp2p::OutEvent::Gossipsub(
                         libp2p::gossipsub::Event::Message {
@@ -459,8 +468,8 @@ impl DomoCache {
                     )) => {
                         let local = OffsetDateTime::now_utc();
 
-                        for (peer, _) in list {
-                            println!("MDNS for peer {peer} expired {local:?}");
+                        for (peer, addr) in list {
+                            println!("MDNS for peer {peer} expired {local:?} {}", addr);
                             self.swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer);
                         }
                     }
@@ -476,6 +485,7 @@ impl DomoCache {
                                 log::info!("Skipping peer since it is not local");
                                 continue;
                             }
+
                             self.swarm
                                  .behaviour_mut()
                                  .gossipsub
