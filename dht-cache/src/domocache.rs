@@ -407,7 +407,6 @@ impl DomoCache {
                 match event {
                     SwarmEvent::ExpiredListenAddr { listener_id, address, .. } => {
                         println!("Address {address:?} expired");
-                        self.swarm.remove_listener(listener_id);
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, .. } => {
                             println!("Connection established {peer_id:?}, {connection_id:?}, {endpoint:?}");
