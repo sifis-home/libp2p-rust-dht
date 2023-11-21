@@ -470,7 +470,7 @@ impl DomoCache {
 
                         for (peer, addr) in list {
                             println!("MDNS for peer {peer} expired {local:?} {}", addr);
-                            self.swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer);
+                            //self.swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer);
                         }
                     }
                     SwarmEvent::Behaviour(crate::domolibp2p::OutEvent::Mdns(
