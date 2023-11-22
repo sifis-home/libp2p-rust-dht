@@ -385,14 +385,24 @@ impl DomoCache {
     }
 
     pub fn remove_connections_of_peers(&mut self) {
+        let mut to_remove: Vec<String> = Vec::new();
         for (peer_id, peer_data) in self.peers_caches_state.iter() {
             if peer_data.publication_timestamp < (utils::get_epoch_ms() - 2 * 1000 * u128::from(SEND_CACHE_HASH_PERIOD)){
-                println!("DISCONNECTING {peer_id}");
+                to_remove.push(peer_id.clone());
                 if let Ok(peer_id) = PeerId::from_str(peer_id) {
-                    let res = self.swarm.disconnect_peer_id(peer_id);
+                    if let Ok(res) = self.swarm.disconnect_peer_id(peer_id) {
+                        println!("DISCONNECTING {peer_id}");
+                    }
                 }
             }
         }
+
+        for to_r in to_remove {
+            self.peers_caches_state.remove(&to_r);
+        }
+
+
+
     }
 
     pub fn print_peers_cache(&self) {
