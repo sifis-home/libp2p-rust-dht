@@ -1,11 +1,6 @@
 // Gossip includes
 use libp2p::gossipsub::MessageId;
-use libp2p::gossipsub::{
-    // Gossipsub, GossipsubEvent, GossipsubMessage,
-    IdentTopic as Topic,
-    MessageAuthenticity,
-    ValidationMode,
-};
+
 use libp2p::{gossipsub, tcp};
 
 use std::collections::hash_map::DefaultHasher;

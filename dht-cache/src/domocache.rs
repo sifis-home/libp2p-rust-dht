@@ -4,7 +4,7 @@ use futures::prelude::*;
 use libp2p::gossipsub::IdentTopic as Topic;
 use libp2p::identity::Keypair;
 use libp2p::{mdns, PeerId};
-use libp2p::swarm::{dial_opts, SwarmEvent};
+use libp2p::swarm::{SwarmEvent};
 use rsa::pkcs8::EncodePrivateKey;
 use rsa::RsaPrivateKey;
 use serde::{Deserialize, Serialize};
@@ -22,7 +22,6 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use crate::utils::get_epoch_ms;
 use std::str::FromStr;
 use libp2p::swarm::dial_opts::DialOpts;
-use crate::domocache::Event::{Continue, RefreshTime};
 
 fn generate_rsa_key() -> (Vec<u8>, Vec<u8>) {
     let mut rng = rand::thread_rng();
@@ -88,6 +87,7 @@ pub struct DomoCache {
     storage: SqlxStorage,
     pub cache: BTreeMap<String, BTreeMap<String, DomoCacheElement>>,
     pub peers_caches_state: BTreeMap<String, DomoCacheStateMessage>,
+    pub mdns_peers_cache: BTreeMap<String, u128>,
     pub publish_cache_counter: u8,
     pub last_cache_repub_timestamp: u128,
     pub swarm: libp2p::Swarm<crate::domolibp2p::DomoBehaviour>,
@@ -385,23 +385,15 @@ impl DomoCache {
     }
 
     pub fn remove_connections_of_peers(&mut self) {
-        let mut to_remove: Vec<String> = Vec::new();
-        for (peer_id, peer_data) in self.peers_caches_state.iter() {
-            if peer_data.publication_timestamp < (utils::get_epoch_ms() - 2 * 1000 * u128::from(SEND_CACHE_HASH_PERIOD)){
-                to_remove.push(peer_id.clone());
+        for (peer_id, last_mdns_rec_timestamp) in self.mdns_peers_cache.iter() {
+            if last_mdns_rec_timestamp.to_owned() < (get_epoch_ms() - 20 * 1000)  {
                 if let Ok(peer_id) = PeerId::from_str(peer_id) {
-                    if let Ok(res) = self.swarm.disconnect_peer_id(peer_id) {
-                        println!("DISCONNECTING {peer_id}");
+                    if let Ok(_res) = self.swarm.disconnect_peer_id(peer_id) {
+                        println!("DISCONNECTING LOCAL CONNECTIONS TO {peer_id}");
                     }
                 }
             }
         }
-
-       for to_r in to_remove {
-            self.peers_caches_state.remove(&to_r);
-       }
-
-
 
     }
 
@@ -429,7 +421,7 @@ impl DomoCache {
 
             event = self.swarm.select_next_some() => {
                 match event {
-                    SwarmEvent::ExpiredListenAddr { listener_id, address, .. } => {
+                    SwarmEvent::ExpiredListenAddr {  address, .. } => {
                         println!("Address {address:?} expired");
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, .. } => {
@@ -475,18 +467,14 @@ impl DomoCache {
                         }
                     }
                     SwarmEvent::Behaviour(crate::domolibp2p::OutEvent::Mdns(
-                        mdns::Event::Expired(list),
+                        mdns::Event::Expired(_list),
                     )) => {
-                        let local = OffsetDateTime::now_utc();
-
-                        for (peer, addr) in list {
-                            println!("MDNS for peer {peer} expired {local:?} {}", addr);
-                        }
+                        self.remove_connections_of_peers();
                     }
                     SwarmEvent::Behaviour(crate::domolibp2p::OutEvent::Mdns(
                         mdns::Event::Discovered(list),
                     )) => {
-                        let local = OffsetDateTime::now_utc();
+                        let _local = OffsetDateTime::now_utc();
                         for (peer_id, multiaddr) in list {
                             println!("Discovered peer {peer_id} {multiaddr}");
                             log::info!("{}", multiaddr);
@@ -497,8 +485,8 @@ impl DomoCache {
                             }
 
                             let dial_opts = DialOpts::from(peer_id);
-                            self.swarm.dial(dial_opts);
-
+                            let _res = self.swarm.dial(dial_opts);
+                            self.mdns_peers_cache.insert(peer_id.to_string(), get_epoch_ms());
 
                             // self.swarm
                             //       .behaviour_mut()
@@ -596,6 +584,7 @@ impl DomoCache {
             storage,
             cache: BTreeMap::new(),
             peers_caches_state: BTreeMap::new(),
+            mdns_peers_cache: BTreeMap::new(),
             client_tx_channel,
             client_rx_channel,
             send_cache_state_timer,
