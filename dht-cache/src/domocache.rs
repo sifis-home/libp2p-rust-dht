@@ -513,7 +513,6 @@ impl DomoCache {
                     self.send_cache_state_timer = tokio::time::Instant::now()
                         + Duration::from_secs(u64::from(SEND_CACHE_HASH_PERIOD));
                     self.send_cache_state().await;
-                    self.remove_connections_of_peers();
                 }
                 PersistentData(data) => {
                     return self.handle_persistent_message_data(&data).await;
