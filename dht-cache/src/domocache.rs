@@ -397,9 +397,9 @@ impl DomoCache {
             }
         }
 
-        for to_r in to_remove {
+       for to_r in to_remove {
             self.peers_caches_state.remove(&to_r);
-        }
+       }
 
 
 
