@@ -98,7 +98,7 @@ pub async fn start(
         .with_behaviour(|key| {
 
             let mdnsconf = mdns::Config {
-                ttl: Duration::from_secs(10),
+                ttl: Duration::from_secs(100),
                 query_interval: Duration::from_secs(5),
                 enable_ipv6: false
             };
@@ -131,7 +131,7 @@ pub async fn start(
             Ok(behaviour)
 
         })?
-        .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
+        .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(1)))
         .build();
 
 
