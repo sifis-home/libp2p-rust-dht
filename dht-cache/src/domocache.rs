@@ -386,7 +386,8 @@ impl DomoCache {
 
     pub fn remove_connections_of_peers(&mut self) {
         for (peer_id, last_mdns_rec_timestamp) in self.mdns_peers_cache.iter() {
-            if last_mdns_rec_timestamp.to_owned() < (get_epoch_ms() - 20 * 1000)  {
+
+            if last_mdns_rec_timestamp.to_owned() < (utils::get_epoch_ms() - 1000 * 10 as u128)  {
                 if let Ok(peer_id) = PeerId::from_str(peer_id) {
                     if let Ok(_res) = self.swarm.disconnect_peer_id(peer_id) {
                         println!("DISCONNECTING LOCAL CONNECTIONS TO {peer_id}");
@@ -469,7 +470,7 @@ impl DomoCache {
                     SwarmEvent::Behaviour(crate::domolibp2p::OutEvent::Mdns(
                         mdns::Event::Expired(_list),
                     )) => {
-                        self.remove_connections_of_peers();
+                        println!("MDNS TTL Expired");
                     }
                     SwarmEvent::Behaviour(crate::domolibp2p::OutEvent::Mdns(
                         mdns::Event::Discovered(list),
@@ -486,7 +487,10 @@ impl DomoCache {
 
                             let dial_opts = DialOpts::from(peer_id);
                             let _res = self.swarm.dial(dial_opts);
+                            println!("INSERT INTO MDNS CACHE {} {} ", peer_id.to_string(), get_epoch_ms());
+
                             self.mdns_peers_cache.insert(peer_id.to_string(), get_epoch_ms());
+                            println!("{:?}", self.mdns_peers_cache);
 
                             // self.swarm
                             //       .behaviour_mut()
@@ -513,6 +517,7 @@ impl DomoCache {
                     self.send_cache_state_timer = tokio::time::Instant::now()
                         + Duration::from_secs(u64::from(SEND_CACHE_HASH_PERIOD));
                     self.send_cache_state().await;
+                    self.remove_connections_of_peers();
                 }
                 PersistentData(data) => {
                     return self.handle_persistent_message_data(&data).await;
