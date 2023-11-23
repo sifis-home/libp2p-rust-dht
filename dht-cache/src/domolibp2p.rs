@@ -127,7 +127,7 @@ pub async fn start(
             Ok(behaviour)
 
         })?
-        .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(1)))
+        .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(10)))
         .build();
 
 

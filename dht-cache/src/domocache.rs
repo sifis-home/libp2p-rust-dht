@@ -20,7 +20,7 @@ use time::OffsetDateTime;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use crate::utils::get_epoch_ms;
-use libp2p::swarm::dial_opts::DialOpts;
+use libp2p::swarm::dial_opts::{DialOpts, PeerCondition};
 
 fn generate_rsa_key() -> (Vec<u8>, Vec<u8>) {
     let mut rng = rand::thread_rng();
@@ -477,7 +477,10 @@ impl DomoCache {
                                 continue;
                             }
 
-                            let dial_opts = DialOpts::from(peer_id);
+                            let dial_opts = DialOpts::peer_id(peer_id)
+                                           .condition(PeerCondition::Always)
+                                           .build();
+
                             let _res = self.swarm.dial(dial_opts);
                             println!("INSERT INTO MDNS CACHE {} {} ", peer_id.to_string(), get_epoch_ms()/1000);
 
