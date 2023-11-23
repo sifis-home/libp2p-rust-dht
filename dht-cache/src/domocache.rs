@@ -3,7 +3,7 @@ use crate::utils;
 use futures::prelude::*;
 use libp2p::gossipsub::IdentTopic as Topic;
 use libp2p::identity::Keypair;
-use libp2p::{mdns, PeerId};
+use libp2p::{mdns, ping};
 use libp2p::swarm::{SwarmEvent};
 use rsa::pkcs8::EncodePrivateKey;
 use rsa::RsaPrivateKey;
@@ -20,7 +20,6 @@ use time::OffsetDateTime;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use crate::utils::get_epoch_ms;
-use std::str::FromStr;
 use libp2p::swarm::dial_opts::DialOpts;
 
 fn generate_rsa_key() -> (Vec<u8>, Vec<u8>) {
@@ -384,19 +383,6 @@ impl DomoCache {
         // }
     }
 
-    pub fn remove_connections_of_peers(&mut self) {
-        for (peer_id, last_mdns_rec_timestamp) in self.mdns_peers_cache.iter() {
-
-            if last_mdns_rec_timestamp.to_owned() < (utils::get_epoch_ms() - 1000 * 10 as u128)  {
-                if let Ok(peer_id) = PeerId::from_str(peer_id) {
-                    if let Ok(_res) = self.swarm.disconnect_peer_id(peer_id) {
-                        println!("DISCONNECTING LOCAL CONNECTIONS TO {peer_id}");
-                    }
-                }
-            }
-        }
-
-    }
 
     pub fn print_peers_cache(&self) {
         for (peer_id, peer_data) in self.peers_caches_state.iter() {
@@ -467,10 +453,16 @@ impl DomoCache {
                             }
                         }
                     }
-                    SwarmEvent::Behaviour(crate::domolibp2p::OutEvent::Mdns(
-                        mdns::Event::Expired(_list),
+                    SwarmEvent::Behaviour(crate::domolibp2p::OutEvent::Ping(
+                        ping::Event { peer, connection, result}
                     )) => {
-                        println!("MDNS TTL Expired");
+
+                        if let Ok(_res) = result {
+                            println!("PING OK {} {}", peer.to_string(), connection);
+                        } else {
+                            println!("PING FAILED {} {}, CLOSE CONNECTION", peer.to_string(), connection);
+                            self.swarm.close_connection(connection);
+                        }
                     }
                     SwarmEvent::Behaviour(crate::domolibp2p::OutEvent::Mdns(
                         mdns::Event::Discovered(list),
@@ -487,7 +479,7 @@ impl DomoCache {
 
                             let dial_opts = DialOpts::from(peer_id);
                             let _res = self.swarm.dial(dial_opts);
-                            println!("INSERT INTO MDNS CACHE {} {} ", peer_id.to_string(), get_epoch_ms());
+                            println!("INSERT INTO MDNS CACHE {} {} ", peer_id.to_string(), get_epoch_ms()/1000);
 
                             self.mdns_peers_cache.insert(peer_id.to_string(), get_epoch_ms());
                             println!("{:?}", self.mdns_peers_cache);
@@ -517,7 +509,6 @@ impl DomoCache {
                     self.send_cache_state_timer = tokio::time::Instant::now()
                         + Duration::from_secs(u64::from(SEND_CACHE_HASH_PERIOD));
                     self.send_cache_state().await;
-                    self.remove_connections_of_peers();
                 }
                 PersistentData(data) => {
                     return self.handle_persistent_message_data(&data).await;

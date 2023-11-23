@@ -15,7 +15,7 @@ use libp2p::yamux;
 //use libp2p::tcp::TcpConfig;
 use libp2p::Transport;
 
-use libp2p::{identity, mdns, swarm::NetworkBehaviour, PeerId, Swarm};
+use libp2p::{identity, mdns, swarm::NetworkBehaviour, PeerId, Swarm, ping};
 
 use std::error::Error;
 use std::io;
@@ -70,9 +70,6 @@ pub async fn start(
     listen_addr: String
 ) -> Result<Swarm<DomoBehaviour>, Box<dyn Error>> {
     let local_peer_id = PeerId::from(local_key_pair.public());
-
-
-
     let arr = parse_hex_key(&shared_key)?;
     let psk = PreSharedKey::new(arr);
 
@@ -93,8 +90,8 @@ pub async fn start(
         .with_behaviour(|key| {
 
             let mdnsconf = mdns::Config {
-                ttl: Duration::from_secs(10),
-                query_interval: Duration::from_secs(5),
+                ttl: Duration::from_secs(30),
+                query_interval: Duration::from_secs(10),
                 enable_ipv6: false
             };
 
@@ -121,7 +118,11 @@ pub async fn start(
                 gossipsub_config,
             )?;
 
-            let behaviour = DomoBehaviour { mdns, gossipsub };
+            let ping_config = ping::Config::new().with_interval(Duration::from_secs(5)).with_timeout(Duration::from_secs(1));
+
+            let ping = ping::Behaviour::new(ping_config);
+
+            let behaviour = DomoBehaviour { mdns, gossipsub , ping };
 
             Ok(behaviour)
 
@@ -150,12 +151,13 @@ pub async fn start(
     Ok(swarm)
 }
 
-// We create a custom network behaviour that combines mDNS and gossipsub.
+// We create a custom network behaviour that combines mDNS and gossipsub and ping.
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "OutEvent")]
 pub struct DomoBehaviour {
     pub mdns: mdns::tokio::Behaviour,
     pub gossipsub: gossipsub::Behaviour,
+    pub ping: ping::Behaviour
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -163,6 +165,7 @@ pub struct DomoBehaviour {
 pub enum OutEvent {
     Gossipsub(gossipsub::Event),
     Mdns(mdns::Event),
+    Ping(ping::Event)
 }
 
 impl From<mdns::Event> for OutEvent {
@@ -174,5 +177,11 @@ impl From<mdns::Event> for OutEvent {
 impl From<gossipsub::Event> for OutEvent {
     fn from(v: gossipsub::Event) -> Self {
         Self::Gossipsub(v)
+    }
+}
+
+impl From<ping::Event> for OutEvent {
+    fn from(v: ping::Event) -> Self {
+        Self::Ping(v)
     }
 }
