@@ -416,12 +416,14 @@ impl DomoCache {
                     }
                     SwarmEvent::ConnectionClosed { peer_id, connection_id, endpoint, num_established: _, cause } => {
                         println!("Connection closed {peer_id:?}, {connection_id:?}, {endpoint:?} -> {cause:?}");
+                        self.swarm.close_connection(connection_id);
                     }
                     SwarmEvent::ListenerError { listener_id, error } => {
                         println!("Listener Error {listener_id:?} -> {error:?}");
                     }
                     SwarmEvent::OutgoingConnectionError { connection_id, peer_id, error } => {
                         println!("Outgoing connection error {peer_id:?}, {connection_id:?} -> {error:?}");
+                        self.swarm.close_connection(connection_id);
                     }
                     SwarmEvent::ListenerClosed { .. } => {
                         println!("Listener Closed");
