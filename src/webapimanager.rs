@@ -62,7 +62,7 @@ impl WebApiManager {
             _ = socket::setsockopt(listener.as_raw_fd(), ReuseAddr, &true);
         }
 
-        let (tx_rest, rx_rest) = mpsc::channel(64);
+        let (tx_rest, rx_rest) = mpsc::channel(128);
 
         let tx_get_all = tx_rest.clone();
 
@@ -77,12 +77,12 @@ impl WebApiManager {
         let tx_pub_message = tx_rest;
 
         let (async_tx_websocket, mut _async_rx_websocket) =
-            broadcast::channel::<AsyncWebSocketDomoMessage>(64);
+            broadcast::channel::<AsyncWebSocketDomoMessage>(128);
 
         let async_tx_websocket_copy = async_tx_websocket.clone();
 
         let (sync_tx_websocket, sync_rx_websocket) =
-            broadcast::channel::<SyncWebSocketDomoMessage>(64);
+            broadcast::channel::<SyncWebSocketDomoMessage>(128);
 
         let sync_tx_websocket_copy = sync_tx_websocket.clone();
 
