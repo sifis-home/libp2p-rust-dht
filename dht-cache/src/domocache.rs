@@ -570,7 +570,7 @@ impl DomoCache {
 
         let peer_id = swarm.local_peer_id().to_string();
 
-        let (client_tx_channel, client_rx_channel) = mpsc::channel::<DomoEvent>(128);
+        let (client_tx_channel, client_rx_channel) = mpsc::channel::<DomoEvent>(1024);
 
         let send_cache_state_timer: tokio::time::Instant =
             tokio::time::Instant::now() + Duration::from_secs(u64::from(SEND_CACHE_HASH_PERIOD));
