@@ -309,6 +309,7 @@ mod tests {
                 ),
                 private_key: None,
                 loopback: false,
+                listen_addr: "/ip4/0.0.0.0/tcp/0".to_string()
             },
             http_port,
         };

@@ -764,6 +764,7 @@ mod tests {
             shared_key: "d061545647652562b4648f52e8373b3a417fc0df56c332154460da1801b341e9"
                 .to_string(),
             loopback: false,
+            listen_addr: "/ip4/0.0.0.0/tcp/0".to_string()
         };
 
         if let Ok(cache) = super::DomoCache::new(conf).await {
