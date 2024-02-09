@@ -8,13 +8,16 @@ use crate::websocketmessage::{
 };
 
 use serde_json::json;
+use futures_util::stream::StreamExt;
 
 pub struct DomoBroker {
     pub domo_cache: DomoCache,
     pub web_manager: WebApiManager,
 }
 
-enum Event {
+
+
+pub enum Event {
     WebSocket(SyncWebSocketDomoMessage),
     Rest(RestMessage),
     Cache(Result<DomoEvent, Box<dyn Error>>),
@@ -35,7 +38,7 @@ impl DomoBroker {
         })
     }
 
-    async fn inner_select(&mut self) -> Event {
+    pub async fn inner_select(&mut self) -> Event {
         use Event::*;
 
         tokio::select! {
@@ -48,9 +51,21 @@ impl DomoBroker {
                 return Rest(rest_message);
             },
 
-            m = self.domo_cache.cache_event_loop() => {
+            m = self.domo_cache.client_rx_channel.recv() => {
+                if let Some(m) = m {
+                    return Cache(Ok(m));
+                }
+            },
+
+            _ = tokio::time::sleep_until(self.domo_cache.send_cache_state_timer) => {
+                self.domo_cache.reload_timer().await;
+            },
+
+            event = self.domo_cache.swarm.select_next_some() => {
+                let m = self.domo_cache.manage_swarm_event(event).await;
                 return Cache(m);
             }
+
         }
 
         Continue
